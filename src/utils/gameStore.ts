@@ -40,9 +40,12 @@ export interface GameState {
   localPlayerIndex: 0 | 1 // 0 = host, 1 = guest
   scores: [number, number]
   pending: number[] // tile ids placed on the board this turn, not yet committed
+  selectedSquare: number | null // board square tiles will play onto
+  selectedDir: 'right' | 'down' // direction the selection advances after a play
+  // most recent committed word; tileIds are its newly placed tiles
+  lastPlay: { word: string; score: number; tileIds: number[] } | null
   passCount: number // consecutive passes; 2 ends the game
   gameOver: boolean
-  message: string | null // transient status / error text
   showInstructionsModal: boolean
 }
 
@@ -59,6 +62,8 @@ interface GameStore extends GameState {
   onMouseMove: (params: MouseParams) => void
   submitTurn: () => void
   recallTiles: () => void
+  undoLastTile: () => void
+  shuffleRack: () => void
   passTurn: () => void
   openInstructions: () => void
   closeInstructions: () => void
@@ -68,6 +73,10 @@ let cursorDownAt = 0
 let cursorDownPos = { x: 0, y: 0 }
 let cursorDelta = { x: 0, y: 0 }
 let dealTimeout: number | null = null
+// A drag only starts reordering the rack after this much movement, so the
+// small wobble of a tap never shuffles tiles around.
+const SWAP_MIN_DRAG = 12
+let swapArmed = false
 
 const otherPlayer = (i: 0 | 1): 0 | 1 => (i === 0 ? 1 : 0)
 
@@ -107,6 +116,9 @@ function drawToRack(
   count: number,
 ): CardType[] {
   const rackPile = RACK_PILE[playerIndex]
+  // Close any gaps left by played tiles so drawn tiles append cleanly
+  // instead of colliding with existing slot indices.
+  cards = reindexRack(cards, playerIndex)
   const bag = tilesInPile(BAG_PILE, cards).sort(
     (a, b) => b.cardPileIndex - a.cardPileIndex, // top of stack first
   )
@@ -192,58 +204,92 @@ export const useGameStore = create<GameStore>((set, get) => {
       if (move.type === 'commit') {
         commitPlacements(move.placements, them, get, set)
       } else if (move.type === 'pass') {
-        endTurn(them, 0, true, get, set)
+        endTurn(them, true, get, set)
       }
     },
 
-    // ── Drag & drop ───────────────────────────────────────────────
+    // ── Pointer input ─────────────────────────────────────────────
+    // Tap an empty board square to select it (tap again to toggle ➡️/⬇️).
+    // Tap a rack tile to play it onto the selection; drag a rack tile to
+    // reorder the rack.
     onMouseDown: ({ clientX, clientY }: MouseParams) => {
       const state = get()
       const us = state.localPlayerIndex
-      if (state.currentPlayerIndex !== us || state.gameOver) return
-      const { activeCard, cards } = state
+      const myTurn = state.currentPlayerIndex === us && !state.gameOver
+      if (state.gameOver) return
 
-      // If a tile is already picked up, this click drops it.
-      if (activeCard) {
-        const targetPile = getPileAtPoint(clientX, clientY)
-        placeTile(activeCard, targetPile, us, get, set)
+      const clicked = getCardFromPoint(clientX, clientY, state.cards)
+      if (clicked) {
+        if (clicked.pileIndex === RACK_PILE[us]) {
+          // Begin a rack drag (sorting is allowed on either turn); a quick
+          // release plays it (see onMouseUp).
+          const { x, y } = getCardPilePosition(clicked)
+          cursorDelta = { x: clientX - x, y: clientY - y }
+          cursorDownPos = { x: clientX, y: clientY }
+          cursorDownAt = Date.now()
+          swapArmed = false
+          set({
+            activeCard: clicked,
+            cursorState: { mouseX: x, mouseY: y, pressed: true },
+          })
+        }
+        // Board tiles (pending or committed) aren't tappable; use Back /
+        // Recall to take uncommitted tiles back.
         return
       }
 
-      const clicked = getCardFromPoint(clientX, clientY, cards)
-      if (!clicked || !isPickable(clicked, us, state.pending)) return
-
-      set({ activeCard: clicked })
-      const { x, y } = getCardPilePosition(clicked)
-      cursorDelta = { x: clientX - x, y: clientY - y }
-      cursorDownPos = { x: clientX, y: clientY }
-      cursorDownAt = Date.now()
-      set({ cursorState: { mouseX: x, mouseY: y, pressed: true } })
+      if (!myTurn) return
+      const pile = getPileAtPoint(clientX, clientY)
+      if (isSquarePile(pile) && !tileOnSquare(pile, state.cards)) {
+        if (state.selectedSquare === pile) {
+          // Tap the selected square again to toggle direction.
+          set({ selectedDir: state.selectedDir === 'right' ? 'down' : 'right' })
+        } else {
+          set({ selectedSquare: pile, selectedDir: 'right' })
+        }
+      }
+      // Clicks elsewhere leave the selection alone; it only clears via
+      // recall, backing out every tile, or the turn ending.
     },
 
     onMouseUp: ({ clientX, clientY }: MouseParams) => {
-      const state = get()
-      if (state.currentPlayerIndex !== state.localPlayerIndex) return
-      const { activeCard } = state
-      const posDiff =
-        Math.abs(cursorDownPos.x - clientX) +
-        Math.abs(cursorDownPos.y - clientY)
-      const timeDiff = Date.now() - cursorDownAt
-
-      // Treat as a drag-drop (not a click-to-select) when moved / held.
-      if (activeCard && (posDiff > 5 || timeDiff > 300)) {
-        const targetPile = getPileAtPoint(clientX, clientY)
-        placeTile(activeCard, targetPile, state.localPlayerIndex, get, set)
+      const { activeCard } = get()
+      if (activeCard) {
+        const posDiff =
+          Math.abs(cursorDownPos.x - clientX) +
+          Math.abs(cursorDownPos.y - clientY)
+        const timeDiff = Date.now() - cursorDownAt
+        // A quick tap (not a reorder drag) plays the tile.
+        if (posDiff <= 5 && timeDiff <= 300) {
+          playSelectedTile(activeCard, get, set)
+        }
       }
       cursorDownPos = { x: 0, y: 0 }
       cursorDelta = { x: 0, y: 0 }
-      set({ cursorState: { ...get().cursorState, pressed: false } })
+      set({
+        activeCard: null,
+        cursorState: { ...get().cursorState, pressed: false },
+      })
     },
 
     onMouseMove: ({ clientX, clientY }: MouseParams) => {
       const mouseX = clientX - cursorDelta.x
       const mouseY = clientY - cursorDelta.y
       set({ cursorState: { ...get().cursorState, mouseX, mouseY } })
+
+      const state = get()
+      const { activeCard, localPlayerIndex } = state
+      if (!activeCard || !state.cursorState.pressed) return
+      if (!swapArmed) {
+        const dist =
+          Math.abs(clientX - cursorDownPos.x) +
+          Math.abs(clientY - cursorDownPos.y)
+        if (dist < SWAP_MIN_DRAG) return
+        swapArmed = true
+      }
+      const card = state.cards[activeCard.id]
+      if (card.pileIndex !== RACK_PILE[localPlayerIndex]) return
+      swapWithinRack(clientX, clientY, card, localPlayerIndex, get, set)
     },
 
     // ── Turn actions ──────────────────────────────────────────────
@@ -251,15 +297,9 @@ export const useGameStore = create<GameStore>((set, get) => {
       const state = get()
       const us = state.localPlayerIndex
       if (state.currentPlayerIndex !== us || state.gameOver) return
-      if (state.pending.length === 0) {
-        set({ message: 'Place at least one tile.' })
-        return
-      }
+      if (state.pending.length === 0) return
       const result = validatePlay(state.cards, state.pending)
-      if (!result.ok) {
-        set({ message: result.error })
-        return
-      }
+      if (!result.ok) return
       const placements = state.pending.map((id) => {
         const t = state.cards.find((c) => c.id === id)!
         return { tileId: id, pile: t.pileIndex, letter: t.letter }
@@ -278,7 +318,50 @@ export const useGameStore = create<GameStore>((set, get) => {
         cards = returnTileToRack(cards, id, state.localPlayerIndex)
       }
       cards = reindexRack(cards, state.localPlayerIndex)
-      set({ cards, pending: [], activeCard: null, message: null })
+      set({
+        cards,
+        pending: [],
+        activeCard: null,
+        selectedSquare: null,
+      })
+    },
+
+    // Randomize the local rack order. Purely visual, so it's allowed on
+    // either player's turn.
+    shuffleRack: () => {
+      const state = get()
+      if (state.gameOver) return
+      const rackPile = RACK_PILE[state.localPlayerIndex]
+      const rack = tilesInPile(rackPile, state.cards)
+      if (rack.length < 2) return
+      const order = rack.map((t) => t.id)
+      for (let i = order.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1))
+        ;[order[i], order[j]] = [order[j], order[i]]
+      }
+      set({
+        cards: state.cards.map((c) => {
+          const idx = order.indexOf(c.id)
+          return idx === -1 ? c : { ...c, cardPileIndex: idx }
+        }),
+      })
+    },
+
+    // Take back the most recently placed tile and put the selection back
+    // on the square it came off, so play can continue from there.
+    undoLastTile: () => {
+      const state = get()
+      const us = state.localPlayerIndex
+      if (state.currentPlayerIndex !== us || state.gameOver) return
+      const lastId = state.pending[state.pending.length - 1]
+      if (lastId == null) return
+      const square = state.cards[lastId].pileIndex
+      set({
+        cards: returnTileToRack(state.cards, lastId, us),
+        pending: state.pending.slice(0, -1),
+        // keep the cursor on the freed square so play can resume there
+        selectedSquare: square,
+      })
     },
 
     passTurn: () => {
@@ -291,7 +374,7 @@ export const useGameStore = create<GameStore>((set, get) => {
       cards = reindexRack(cards, us)
       set({ cards, pending: [] })
       useMultiplayerStore.getState().sendMove({ type: 'pass' })
-      endTurn(us, 0, true, get, set)
+      endTurn(us, true, get, set)
     },
 
     openInstructions: () => set({ showInstructionsModal: true }),
@@ -303,6 +386,9 @@ function initializeGameState(): Omit<GameState, 'cards'> {
   return {
     activeCard: null,
     cursorState: { mouseX: 0, mouseY: 0, pressed: false },
+    selectedSquare: null,
+    selectedDir: 'right',
+    lastPlay: null,
     dealPhase: 0,
     currentPlayerIndex: 0,
     localPlayerIndex: 0,
@@ -310,7 +396,6 @@ function initializeGameState(): Omit<GameState, 'cards'> {
     pending: [],
     passCount: 0,
     gameOver: false,
-    message: null,
     showInstructionsModal: false,
   }
 }
@@ -324,38 +409,80 @@ const getCardFromPoint = (x: number, y: number, cards: CardType[]) => {
 const getPileAtPoint = (x: number, y: number): number => {
   const el = document.elementFromPoint(x, y) as HTMLDivElement | null
   if (el?.dataset.id) {
-    // dropped onto another tile → resolve to that tile's pile
+    // point is over a tile, not a pile
     return -1
   }
   return +(el?.dataset.pileindex ?? '-1')
 }
 
-// A tile is pickable if it's on the local player's rack, or it's one of the
-// tiles they placed this turn (still uncommitted).
-const isPickable = (
+const getRackRect = (playerIndex: 0 | 1): DOMRect | null => {
+  const rackEl = document.querySelector(
+    `.pile[data-pileindex="${RACK_PILE[playerIndex]}"]`,
+  ) as HTMLDivElement | null
+  return rackEl?.getBoundingClientRect() ?? null
+}
+
+const isOverRack = (x: number, y: number, playerIndex: 0 | 1): boolean => {
+  const r = getRackRect(playerIndex)
+  return !!r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
+}
+
+// Reorder the rack live while dragging a rack tile across it: move the
+// dragged tile to the slot under the cursor.
+const swapWithinRack = (
+  clientX: number,
+  clientY: number,
   card: CardType,
-  us: 0 | 1,
-  pending: number[],
-): boolean => {
-  if (card.pileIndex === RACK_PILE[us]) return true
-  if (pending.includes(card.id)) return true
-  return false
+  playerIndex: 0 | 1,
+  get: () => GameStore,
+  set: (s: Partial<GameStore>) => void,
+) => {
+  const rackPile = RACK_PILE[playerIndex]
+  const rect = getRackRect(playerIndex)
+  if (!rect || !isOverRack(clientX, clientY, playerIndex)) return
+
+  const { cards } = get()
+  const rack = tilesInPile(rackPile, cards)
+  // The fan spans the full rack in RACK_SIZE slots (see getCardPilePosition);
+  // map cursor x to a slot, clamped to the tiles actually present.
+  const slot = Math.floor(((clientX - rect.left) / rect.width) * RACK_SIZE)
+  const to = Math.max(0, Math.min(rack.length - 1, slot))
+  const from = rack.findIndex((t) => t.id === card.id)
+  if (from === -1 || from === to) return
+
+  const order = rack.map((t) => t.id)
+  order.splice(from, 1)
+  order.splice(to, 0, card.id)
+  set({
+    cards: cards.map((c) => {
+      const idx = order.indexOf(c.id)
+      return idx === -1 ? c : { ...c, cardPileIndex: idx }
+    }),
+  })
 }
 
 // ── Placement ───────────────────────────────────────────────────────
+// Return a tile to the rack, preferring the slot it was played from (still
+// held in its cardPileIndex). If that slot has since been taken (rack was
+// shuffled / reordered meanwhile), append it after the last tile instead.
 const returnTileToRack = (
   cards: CardType[],
   tileId: number,
   playerIndex: 0 | 1,
 ): CardType[] => {
   const rackPile = RACK_PILE[playerIndex]
-  const rackCount = tilesInPile(rackPile, cards).length
+  const tile = cards.find((c) => c.id === tileId)!
+  const rack = tilesInPile(rackPile, cards)
+  const slotTaken = rack.some((t) => t.cardPileIndex === tile.cardPileIndex)
+  const slot = slotTaken
+    ? rack[rack.length - 1].cardPileIndex + 1
+    : tile.cardPileIndex
   return cards.map((c) =>
     c.id === tileId
       ? {
           ...c,
           pileIndex: rackPile,
-          cardPileIndex: rackCount,
+          cardPileIndex: slot,
           // reset a blank back to unassigned when it returns to the rack
           letter: c.isBlank ? '' : c.letter,
         }
@@ -363,59 +490,53 @@ const returnTileToRack = (
   )
 }
 
-// Handle a local drag-drop / click-drop of `card` onto `targetPile`.
-const placeTile = (
+// Play a rack tile onto the currently selected square, then advance the
+// selection in the current direction to the next empty square.
+const playSelectedTile = (
   card: CardType,
-  targetPile: number,
-  playerIndex: 0 | 1,
   get: () => GameStore,
   set: (s: Partial<GameStore>) => void,
 ) => {
   const state = get()
-  const rackPile = RACK_PILE[playerIndex]
-
-  // Drop back onto rack → return to rack.
-  if (targetPile === rackPile) {
-    let cards = returnTileToRack(state.cards, card.id, playerIndex)
-    cards = reindexRack(cards, playerIndex)
-    set({
-      cards,
-      activeCard: null,
-      pending: state.pending.filter((id) => id !== card.id),
-      message: null,
-    })
-    return
-  }
-
-  // Valid drop only onto an empty board square.
-  const validSquare =
-    isSquarePile(targetPile) && !tileOnSquare(targetPile, state.cards)
-  if (!validSquare) {
-    set({ activeCard: null })
-    return
-  }
+  const square = state.selectedSquare
+  if (square == null || tileOnSquare(square, state.cards)) return
 
   // Assign a letter to a blank tile on first placement.
   let letter = card.letter
   if (card.isBlank && !letter) {
     const input = window.prompt('Blank tile — choose a letter (A–Z):')
     const chosen = (input ?? '').trim().toUpperCase().slice(0, 1)
-    if (!/^[A-Z]$/.test(chosen)) {
-      set({ activeCard: null })
-      return
-    }
+    if (!/^[A-Z]$/.test(chosen)) return
     letter = chosen
   }
 
+  // cardPileIndex is left untouched: it keeps the rack slot the tile came
+  // from, so taking it back (Back / tap / Recall) restores its spot.
   const cards = state.cards.map((c) =>
-    c.id === card.id
-      ? { ...c, pileIndex: targetPile, cardPileIndex: 0, letter }
-      : c,
+    c.id === card.id ? { ...c, pileIndex: square, letter } : c,
   )
-  const pending = state.pending.includes(card.id)
-    ? state.pending
-    : [...state.pending, card.id]
-  set({ cards, activeCard: null, pending, message: null })
+  set({
+    cards,
+    pending: [...state.pending, card.id],
+    selectedSquare: nextEmptySquare(cards, square, state.selectedDir),
+  })
+}
+
+// First empty square after `pile` in the given direction (skipping over
+// occupied squares), or null when the edge of the board is reached.
+const nextEmptySquare = (
+  cards: CardType[],
+  pile: number,
+  dir: 'right' | 'down',
+): number | null => {
+  let { row, col } = pileToSquare(pile)
+  while (true) {
+    if (dir === 'right') col++
+    else row++
+    if (row >= BOARD_SIZE || col >= BOARD_SIZE) return null
+    const p = squareToPile(row, col)
+    if (!tileOnSquare(p, cards)) return p
+  }
 }
 
 // ── Validation & scoring ────────────────────────────────────────────
@@ -473,7 +594,7 @@ function scoreWord(tiles: CardType[], pendingSet: Set<number>): number {
   return sum * wordMult
 }
 
-function validatePlay(cards: CardType[], pending: number[]): PlayResult {
+export function validatePlay(cards: CardType[], pending: number[]): PlayResult {
   const placed = pending
     .map((id) => cards.find((c) => c.id === id)!)
     .map((t) => ({ tile: t, ...pileToSquare(t.pileIndex) }))
@@ -589,13 +710,18 @@ function commitPlacements(
 
   const scores: [number, number] = [...get().scores]
   scores[playerIndex] += score
-  set({ cards, scores })
-  endTurn(playerIndex, score, false, get, set)
+  set({
+    cards,
+    scores,
+    lastPlay: result.ok
+      ? { word: result.words[0], score, tileIds: pendingIds }
+      : get().lastPlay,
+  })
+  endTurn(playerIndex, false, get, set)
 }
 
 function endTurn(
   playerIndex: 0 | 1,
-  score: number,
   wasPass: boolean,
   get: () => GameStore,
   set: (s: Partial<GameStore>) => void,
@@ -614,13 +740,10 @@ function endTurn(
     currentPlayerIndex: otherPlayer(playerIndex),
     pending: [],
     activeCard: null,
+    selectedSquare: null,
+    selectedDir: 'right',
     passCount,
     gameOver,
-    message: wasPass
-      ? `${playerName(playerIndex, get)} passed.`
-      : score > 0
-        ? `${playerName(playerIndex, get)} scored ${score}.`
-        : null,
   })
   if (gameOver) finalizeScores(get, set)
   const { localPlayerIndex } = get()
@@ -631,10 +754,6 @@ function endTurn(
   ) {
     navigator.vibrate?.(60)
   }
-}
-
-function playerName(i: 0 | 1, get: () => GameStore): string {
-  return i === get().localPlayerIndex ? 'You' : 'Opponent'
 }
 
 // Subtract each player's leftover rack tiles from their score.
@@ -675,8 +794,14 @@ useGameStore.subscribe((state) => {
   if (mp.mode !== 'multiplayer' || state.localPlayerIndex !== 0) return
   if (state.dealPhase !== -1) return
   if (state.gameOver) return clearGameState()
+  // The pending list isn't persisted, so snapshot uncommitted tiles back on
+  // the rack — otherwise a refresh mid-word strands them on the board.
+  let cards = state.cards
+  for (const id of state.pending) {
+    cards = returnTileToRack(cards, id, state.localPlayerIndex)
+  }
   saveGameState({
-    cards: state.cards,
+    cards,
     currentPlayerIndex: state.currentPlayerIndex,
     scores: state.scores,
     passCount: state.passCount,

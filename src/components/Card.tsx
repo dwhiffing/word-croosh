@@ -36,7 +36,7 @@ const Tile = ({ cardId }: { cardId: number }) => {
       data-id={store.opacity === 1 ? cardId : undefined}
       className={`card ${store.isFaceDown ? 'face-down' : ''} ${
         store.isDragging ? 'active' : 'inactive'
-      }`}
+      } ${store.isLastPlay ? 'last-play' : ''}`}
       style={{
         zIndex: store.isDragging ? 99999 : zIndex,
         scale: store.scale,
@@ -69,7 +69,12 @@ const getShallowTileState =
     const card = state.cards[cardId]
     const { cardPileIndex, pileIndex, letter, value, isBlank } = card
     const { mouseX, mouseY, pressed } = state.cursorState
-    const { x: xPos, y: yPos, pileType } = getCardPilePosition(card)
+    const {
+      x: xPos,
+      y: yPos,
+      pileType,
+      scale: pileScale,
+    } = getCardPilePosition(card)
     const { width, height } = getPileSize()
 
     const isActive = cardId === state.activeCard?.id
@@ -87,11 +92,12 @@ const getShallowTileState =
     const x = isShuffling ? bagX : isDragging ? mouseX : xPos
     const y = isShuffling ? bagY : isDragging ? mouseY : yPos
 
+    const isLastPlay = state.lastPlay?.tileIds.includes(cardId) ?? false
     const isOnBoard = pileIndex >= 1 && pileIndex <= 225
     // opponent-rack tiles collapse into a neat stacked pile; own-rack fans out
     const opacity = pileIndex === oppRack || isInBag ? 0 : 1
 
-    const scale = isDragging ? 1.1 : pileIndex === ownRack ? 1 : isOnBoard ? 1 : 1
+    const scale = isDragging ? pileScale * 1.05 : pileScale
 
     const zIndex = isOnBoard ? 10 : pileIndex === ownRack ? 100 : 0
 
@@ -101,6 +107,7 @@ const getShallowTileState =
       scale,
       isActive,
       isDragging,
+      isLastPlay,
       pileType,
       isFaceDown,
       opacity,
@@ -120,6 +127,7 @@ type TileShallowState = {
   scale: number
   isActive: boolean
   isDragging: boolean
+  isLastPlay: boolean
   pileType: string
   isFaceDown: boolean
   opacity: number

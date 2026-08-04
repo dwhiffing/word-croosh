@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { BAG_PILE, isSquarePile, RACK_PILE } from './constants'
+import { BAG_PILE, isSquarePile, RACK_PILE, RACK_SIZE } from './constants'
 
 export const useForceUpdate = () => {
   const [, setValue] = useState(0)
@@ -42,37 +42,42 @@ export const pileTypeOf = (
 }
 
 // Screen position of a tile. Board tiles sit exactly on their square.
-// Rack tiles fan out horizontally within the rack container.
+// Rack tiles fan out across RACK_SIZE slots spanning the full rack, scaled
+// up (around their center) to fill the rack height.
 export const getCardPilePosition = (card: CardType) => {
   const pileType = pileTypeOf(card.pileIndex)
   const pilePos = getPilePos(card.pileIndex)
-  let offsetX = 0
-  const offsetY = 0
 
   if (pileType === 'rack') {
     const { width } = getPileSize()
     const rackEl = document.querySelector(
       `.pile[data-pileindex="${card.pileIndex}"]`,
     ) as HTMLDivElement | null
-    const rackWidth = rackEl?.offsetWidth ?? width * 7
+    const rackWidth = rackEl?.offsetWidth ?? width * RACK_SIZE
     const rackHeight = rackEl?.offsetHeight ?? width
-    const step = width * 1.05
-    // center the 7-tile fan within the rack, and vertically inside it
-    const inset = (rackWidth - step * 7) / 2 + (step - width) / 2
-    offsetX = inset + card.cardPileIndex * step
+    const step = rackWidth / RACK_SIZE
+    const scale = Math.min(
+      (rackHeight * 0.9) / width,
+      (step * 0.95) / width,
+    )
+    // translate positions the unscaled box; scale grows around its center,
+    // so center the box on its slot / the rack's midline
+    const centerX = pilePos.x + step * (card.cardPileIndex + 0.5)
     return {
-      x: pilePos.x + offsetX,
+      x: centerX - width / 2,
       y: pilePos.y + (rackHeight - width) / 2,
       pileType,
       rotate: 0,
+      scale,
     }
   }
 
   return {
-    x: pilePos.x + offsetX,
-    y: pilePos.y + offsetY,
+    x: pilePos.x,
+    y: pilePos.y,
     pileType,
     rotate: 0,
+    scale: 1,
   }
 }
 
