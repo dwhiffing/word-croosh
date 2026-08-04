@@ -1,8 +1,8 @@
 import Peer, { type DataConnection, type PeerOptions } from 'peerjs'
 import { create } from 'zustand'
 
-const STORAGE_KEY = 'moonstone-mp-state'
-const DEBUG_KEY = 'moonstone-network-debug-visible'
+const STORAGE_KEY = 'word-croosh-mp-state'
+const DEBUG_KEY = 'word-croosh-network-debug-visible'
 
 function getDebugPanelInitialState(): boolean {
   return localStorage.getItem(DEBUG_KEY) === '1'
@@ -121,6 +121,7 @@ export interface SavedGameState {
   scores: [number, number]
   passCount: number
   gameOver: boolean
+  lastPlay?: { word: string; score: number; tileIds: number[] } | null
   wins?: [number, number]
   lastWinnerIndex?: 0 | 1 | null
 }

@@ -42,8 +42,7 @@ function App() {
 			swapMode: s.swapMode,
 			swapCount: s.swapIds.length,
 			// swapping on a pass needs at least 8 tiles left in the bag
-			canSwap:
-				s.cards.filter((c) => c.pileIndex === BAG_PILE).length >= 8,
+			canSwap: s.cards.filter((c) => c.pileIndex === BAG_PILE).length >= 8,
 			startPass: s.startPass,
 			confirmSwap: s.confirmSwap,
 			cancelSwap: s.cancelSwap,
@@ -189,7 +188,7 @@ function App() {
 			{/* Landing screen */}
 			{!started && !peerConnected && (
 				<div className="flex flex-col justify-center items-center h-full gap-4 absolute inset-0 text-2xl">
-					<h1 className="text-4xl font-bold mb-4">Scrabble</h1>
+					<h1 className="text-4xl font-bold mb-4">Word Croosh</h1>
 					<button
 						className="button font-medium px-4 py-3"
 						onClick={() => {

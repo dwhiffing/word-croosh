@@ -208,6 +208,7 @@ export const useGameStore = create<GameStore>((set, get) => {
         scores: saved.scores,
         passCount: saved.passCount,
         gameOver: saved.gameOver,
+        lastPlay: saved.lastPlay ?? null,
       })
     },
 
@@ -896,6 +897,7 @@ useGameStore.subscribe((state) => {
     scores: state.scores,
     passCount: state.passCount,
     gameOver: state.gameOver,
+    lastPlay: state.lastPlay,
   })
 })
 
