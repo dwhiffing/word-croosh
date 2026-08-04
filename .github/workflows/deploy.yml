@@ -31,6 +31,18 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
 
+      - name: Check TURN configuration
+        env:
+          VITE_TURN_USERNAME: ${{ secrets.VITE_TURN_USERNAME }}
+          VITE_TURN_CREDENTIAL: ${{ secrets.VITE_TURN_CREDENTIAL }}
+        run: |
+          if [ -z "$VITE_TURN_USERNAME" ]; then
+            echo "::warning::VITE_TURN_USERNAME secret is unset — this build will ship without TURN relay, so peers behind strict NATs may fail to connect."
+          fi
+          if [ -z "$VITE_TURN_CREDENTIAL" ]; then
+            echo "::warning::VITE_TURN_CREDENTIAL secret is unset — this build will ship without TURN relay, so peers behind strict NATs may fail to connect."
+          fi
+
       - name: Deploy
         run: pnpm run deploy
         env:

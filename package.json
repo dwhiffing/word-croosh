@@ -9,7 +9,6 @@
 		"lint": "eslint .",
 		"lint:fix": "biome check --write .",
 		"preview": "vite preview",
-		"solve": "(cd solve-check-rs && cargo run --release)",
 		"deploy": "pnpm run build && gh-pages -d dist"
 	},
 	"dependencies": {
