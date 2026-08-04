@@ -36,7 +36,9 @@ const Tile = ({ cardId }: { cardId: number }) => {
       data-id={store.opacity === 1 ? cardId : undefined}
       className={`card ${store.isFaceDown ? 'face-down' : ''} ${
         store.isDragging ? 'active' : 'inactive'
-      } ${store.isLastPlay ? 'last-play' : ''}`}
+      } ${store.isLastPlay ? 'last-play' : ''} ${
+        store.isSwapSelected ? 'swap-selected' : ''
+      }`}
       style={{
         zIndex: store.isDragging ? 99999 : zIndex,
         scale: store.scale,
@@ -93,6 +95,7 @@ const getShallowTileState =
     const y = isShuffling ? bagY : isDragging ? mouseY : yPos
 
     const isLastPlay = state.lastPlay?.tileIds.includes(cardId) ?? false
+    const isSwapSelected = state.swapMode && state.swapIds.includes(cardId)
     const isOnBoard = pileIndex >= 1 && pileIndex <= 225
     // opponent-rack tiles collapse into a neat stacked pile; own-rack fans out
     const opacity = pileIndex === oppRack || isInBag ? 0 : 1
@@ -108,6 +111,7 @@ const getShallowTileState =
       isActive,
       isDragging,
       isLastPlay,
+      isSwapSelected,
       pileType,
       isFaceDown,
       opacity,
@@ -128,6 +132,7 @@ type TileShallowState = {
   isActive: boolean
   isDragging: boolean
   isLastPlay: boolean
+  isSwapSelected: boolean
   pileType: string
   isFaceDown: boolean
   opacity: number

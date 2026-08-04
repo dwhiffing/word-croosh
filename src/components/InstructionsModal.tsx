@@ -24,8 +24,8 @@ export const InstructionsModal = () => {
 						connect to tiles already on the board.
 					</li>
 					<li>
-						Coloured squares multiply letters (<b>DL/TL</b>) or words (
-						<b>DW/TW</b>). Using all 7 tiles scores a <b>+50</b> bonus.
+						Coloured squares multiply letters (<b>2L/3L</b>) or words (
+						<b>2W/3W</b>). Using all 7 tiles scores a <b>+50</b> bonus.
 					</li>
 					<li>
 						The game ends when the bag is empty and a rack is cleared, or after

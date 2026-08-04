@@ -44,6 +44,8 @@ export interface GameState {
   selectedDir: 'right' | 'down' // direction the selection advances after a play
   // most recent committed word; tileIds are its newly placed tiles
   lastPlay: { word: string; score: number; tileIds: number[] } | null
+  swapMode: boolean // passing: picking rack tiles to exchange with the bag
+  swapIds: number[] // rack tiles marked for exchange
   passCount: number // consecutive passes; 2 ends the game
   gameOver: boolean
   showInstructionsModal: boolean
@@ -65,6 +67,9 @@ interface GameStore extends GameState {
   undoLastTile: () => void
   shuffleRack: () => void
   passTurn: () => void
+  startPass: () => void
+  confirmSwap: () => void
+  cancelSwap: () => void
   openInstructions: () => void
   closeInstructions: () => void
 }
@@ -203,6 +208,9 @@ export const useGameStore = create<GameStore>((set, get) => {
       const them = otherPlayer(get().localPlayerIndex)
       if (move.type === 'commit') {
         commitPlacements(move.placements, them, get, set)
+      } else if (move.type === 'swap') {
+        exchangeTiles(move.tileIds, them, get, set)
+        endTurn(them, true, get, set)
       } else if (move.type === 'pass') {
         endTurn(them, true, get, set)
       }
@@ -259,9 +267,19 @@ export const useGameStore = create<GameStore>((set, get) => {
           Math.abs(cursorDownPos.x - clientX) +
           Math.abs(cursorDownPos.y - clientY)
         const timeDiff = Date.now() - cursorDownAt
-        // A quick tap (not a reorder drag) plays the tile.
+        // A quick tap (not a reorder drag) plays the tile — or, while
+        // picking tiles to exchange, toggles its selection.
         if (posDiff <= 5 && timeDiff <= 300) {
-          playSelectedTile(activeCard, get, set)
+          const state = get()
+          if (state.swapMode) {
+            set({
+              swapIds: state.swapIds.includes(activeCard.id)
+                ? state.swapIds.filter((id) => id !== activeCard.id)
+                : [...state.swapIds, activeCard.id],
+            })
+          } else {
+            playSelectedTile(activeCard, get, set)
+          }
         }
       }
       cursorDownPos = { x: 0, y: 0 }
@@ -377,6 +395,34 @@ export const useGameStore = create<GameStore>((set, get) => {
       endTurn(us, true, get, set)
     },
 
+    // Pass with an optional tile exchange: with 8+ tiles in the bag, enter
+    // swap mode (tap rack tiles to mark them, then confirm); with fewer,
+    // exchanging isn't allowed, so pass immediately.
+    startPass: () => {
+      const state = get()
+      const us = state.localPlayerIndex
+      if (state.currentPlayerIndex !== us || state.gameOver) return
+      if (tilesInPile(BAG_PILE, state.cards).length >= 8) {
+        set({ swapMode: true, swapIds: [] })
+      } else {
+        get().passTurn()
+      }
+    },
+
+    confirmSwap: () => {
+      const state = get()
+      const us = state.localPlayerIndex
+      if (state.currentPlayerIndex !== us || state.gameOver) return
+      const ids = state.swapIds
+      set({ swapMode: false, swapIds: [] })
+      if (ids.length === 0) return get().passTurn()
+      useMultiplayerStore.getState().sendMove({ type: 'swap', tileIds: ids })
+      exchangeTiles(ids, us, get, set)
+      endTurn(us, true, get, set)
+    },
+
+    cancelSwap: () => set({ swapMode: false, swapIds: [] }),
+
     openInstructions: () => set({ showInstructionsModal: true }),
     closeInstructions: () => set({ showInstructionsModal: false }),
   }
@@ -389,6 +435,8 @@ function initializeGameState(): Omit<GameState, 'cards'> {
     selectedSquare: null,
     selectedDir: 'right',
     lastPlay: null,
+    swapMode: false,
+    swapIds: [],
     dealPhase: 0,
     currentPlayerIndex: 0,
     localPlayerIndex: 0,
@@ -720,6 +768,33 @@ function commitPlacements(
   endTurn(playerIndex, false, get, set)
 }
 
+// Exchange rack tiles with the bag: they go under the bag (drawn last, so
+// they can't come straight back) and the same number of fresh tiles are
+// drawn. Runs identically on both peers to keep the shared bag in lockstep.
+function exchangeTiles(
+  tileIds: number[],
+  playerIndex: 0 | 1,
+  get: () => GameStore,
+  set: (s: Partial<GameStore>) => void,
+) {
+  let cards = get().cards
+  const bag = tilesInPile(BAG_PILE, cards) // sorted ascending
+  const bottom = bag.length ? bag[0].cardPileIndex : 0
+  const sorted = [...tileIds].sort((a, b) => a - b)
+  cards = cards.map((c) => {
+    const pos = sorted.indexOf(c.id)
+    if (pos === -1) return c
+    return {
+      ...c,
+      pileIndex: BAG_PILE,
+      cardPileIndex: bottom - sorted.length + pos,
+      letter: c.isBlank ? '' : c.letter,
+    }
+  })
+  cards = drawToRack(cards, playerIndex, sorted.length)
+  set({ cards })
+}
+
 function endTurn(
   playerIndex: 0 | 1,
   wasPass: boolean,
@@ -742,6 +817,8 @@ function endTurn(
     activeCard: null,
     selectedSquare: null,
     selectedDir: 'right',
+    swapMode: false,
+    swapIds: [],
     passCount,
     gameOver,
   })

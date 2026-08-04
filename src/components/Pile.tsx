@@ -1,6 +1,13 @@
 import { CENTER_SQUARE, getBonus } from '../utils/constants'
 import { useGameStore } from '../utils/gameStore'
 
+const BONUS_LABELS: Record<string, string> = {
+  DL: '2L',
+  TL: '3L',
+  DW: '2W',
+  TW: '3W',
+}
+
 // A single board square. Shows its bonus label when no tile covers it, and
 // the direction arrow when it's the selected play target.
 export const Square = ({ pileIndex }: { pileIndex: number }) => {
@@ -23,7 +30,7 @@ export const Square = ({ pileIndex }: { pileIndex: number }) => {
       ) : isCenter ? (
         <span className="square-star">★</span>
       ) : bonus ? (
-        <span className="square-label">{bonus}</span>
+        <span className="square-label">{BONUS_LABELS[bonus]}</span>
       ) : null}
     </div>
   )

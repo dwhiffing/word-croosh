@@ -105,7 +105,7 @@
     background: #e59aa0;
   }
   .square-label {
-    font-size: calc(var(--base-size) * 0.3);
+    font-size: calc(var(--base-size) * 0.6);
     font-weight: 800;
     color: rgba(255, 255, 255, 0.85);
     pointer-events: none;
@@ -195,7 +195,14 @@
   }
   /* tiles from the most recently played word */
   .card.last-play .tile-front {
-    background: #ffe08a;
+    background: #25b925;
+    color: #fff;
+  }
+  /* rack tiles marked for exchange while passing */
+  .card.swap-selected .tile-front {
+    background: #b58b46;
+    outline: 3px solid #4a2f10;
+    outline-offset: -3px;
   }
   .tile-letter {
     font-size: calc(var(--base-size) * 0.55);

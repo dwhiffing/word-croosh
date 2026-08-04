@@ -1,7 +1,12 @@
 import debounce from "lodash/debounce";
 import { useShallow } from "zustand/react/shallow";
 import { useForceUpdate, useWindowEvent } from "../utils";
-import { BOARD_SIZE, FIRST_SQUARE_PILE, RACK_PILE } from "../utils/constants";
+import {
+	BAG_PILE,
+	BOARD_SIZE,
+	FIRST_SQUARE_PILE,
+	RACK_PILE,
+} from "../utils/constants";
 import { useGameStore, validatePlay } from "../utils/gameStore";
 import { useMultiplayerStore } from "../utils/multiplayerStore";
 import Tile from "./Card";
@@ -32,7 +37,14 @@ function App() {
 			recallTiles: s.recallTiles,
 			undoLastTile: s.undoLastTile,
 			shuffleRack: s.shuffleRack,
-			passTurn: s.passTurn,
+			swapMode: s.swapMode,
+			swapCount: s.swapIds.length,
+			// swapping on a pass needs at least 8 tiles left in the bag
+			canSwap:
+				s.cards.filter((c) => c.pileIndex === BAG_PILE).length >= 8,
+			startPass: s.startPass,
+			confirmSwap: s.confirmSwap,
+			cancelSwap: s.cancelSwap,
 		})),
 	);
 
@@ -66,9 +78,15 @@ function App() {
 							</div>
 							{!state.gameOver && (
 								<div className="turn-row">
-									{state.lastPlay &&
-										`${state.lastPlay.word} (${state.lastPlay.score}) - `}
-									{myTurn ? "Your turn!" : "Opponent's turn!"}
+									{state.swapMode ? (
+										"Tap tiles to swap, then confirm"
+									) : (
+										<>
+											{state.lastPlay &&
+												`${state.lastPlay.word} (${state.lastPlay.score}) - `}
+											{myTurn ? "Your turn!" : "Opponent's turn!"}
+										</>
+									)}
 								</div>
 							)}
 						</div>
@@ -87,7 +105,25 @@ function App() {
 						<div className="status-row">
 							{!state.gameOver && (
 								<div className="controls">
-									{myTurn && (
+									{myTurn && state.swapMode && (
+										<>
+											<button
+												className="button px-3 py-1"
+												onClick={state.confirmSwap}
+											>
+												{state.swapCount > 0
+													? `Swap ${state.swapCount}`
+													: "Pass"}
+											</button>
+											<button
+												className="button px-3 py-1"
+												onClick={state.cancelSwap}
+											>
+												Cancel
+											</button>
+										</>
+									)}
+									{myTurn && !state.swapMode && (
 										<>
 											<button
 												className="button px-3 py-1"
@@ -113,9 +149,9 @@ function App() {
 											) : (
 												<button
 													className="button px-3 py-1"
-													onClick={state.passTurn}
+													onClick={state.startPass}
 												>
-													Pass
+													{state.canSwap ? "Swap" : "Pass"}
 												</button>
 											)}
 										</>

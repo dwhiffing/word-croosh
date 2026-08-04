@@ -113,6 +113,7 @@ export type TilePlacement = { tileId: number; pile: number; letter: string }
 export type MoveData =
   | { type: 'commit'; placements: TilePlacement[] }
   | { type: 'pass' }
+  | { type: 'swap'; tileIds: number[] }
 
 export interface SavedGameState {
   cards: CardType[]
