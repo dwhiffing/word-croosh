@@ -37,23 +37,24 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
 
+    /* Real visible height, kept in sync with window.innerHeight by JS
+       (see main.tsx) — dvh/vh are unreliable on mobile browsers. */
+    --app-height: 100dvh;
+
     /* A tile/square is 1/16 of the smaller viewport dimension (15 cols + margin). */
-    --base-size: min(6.2vw, calc((100dvh - 250px) / 15), 44px);
+    --base-size: min(6.2vw, calc((var(--app-height) - 250px) / 15), 44px);
   }
 
   html,
   body {
-    height: 100dvh;
+    height: var(--app-height);
     overflow: hidden;
     user-select: none;
     -webkit-user-select: none;
   }
 
-  /* Must be the *dynamic* viewport height: with the mobile browser URL bar
-     visible, 100vh (h-screen) is taller than the visible area, which pushes
-     the rack below the fold. */
   #root {
-    height: 100dvh;
+    height: var(--app-height);
   }
   /* Keep the rack above the home-indicator / gesture area in PWA mode
      (viewport-fit=cover lets content extend under it). */
@@ -89,10 +90,9 @@
   .board {
     display: grid;
     gap: 1px;
-    padding: 3px;
+    padding: 0px;
     background: var(--color-square-border);
-    border-radius: 4px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    border: 2px solid var(--color-on-surface-active);
   }
 
   .pile.square {
