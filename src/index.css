@@ -49,6 +49,18 @@
     -webkit-user-select: none;
   }
 
+  /* Must be the *dynamic* viewport height: with the mobile browser URL bar
+     visible, 100vh (h-screen) is taller than the visible area, which pushes
+     the rack below the fold. */
+  #root {
+    height: 100dvh;
+  }
+  /* Keep the rack above the home-indicator / gesture area in PWA mode
+     (viewport-fit=cover lets content extend under it). */
+  #ui {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
   body {
     @apply bg-on-surface;
     color: white;
