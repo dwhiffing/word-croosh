@@ -24,12 +24,15 @@
   <meta name="twitter:title" content="Word Croosh" />
   <meta name="twitter:description" content="Word Croosh" />
   <meta name="twitter:image" content="/word-croosh/share.png" />
-  <script type="module" crossorigin src="/word-croosh/assets/index-DjjtG86p.js"></script>
-  <link rel="stylesheet" crossorigin href="/word-croosh/assets/index-bwZmaUBH.css">
+  <script type="module" crossorigin src="/word-croosh/assets/index-B1dI0P1d.js"></script>
+  <link rel="stylesheet" crossorigin href="/word-croosh/assets/index-Dan073ev.css">
 <link rel="manifest" href="/word-croosh/manifest.webmanifest"><script id="vite-plugin-pwa:register-sw" src="/word-croosh/registerSW.js"></script></head>
 
 <body>
-  <div id="root" class="w-screen h-screen select-none overflow-hidden relative"></div>
+  <!-- height comes from #root { height: var(--app-height) } in index.css —
+       h-screen (100vh) must NOT be used here: the utilities layer would beat
+       the base-layer rule, and 100vh lies on mobile (URL-bar-hidden height) -->
+  <div id="root" class="select-none overflow-hidden relative"></div>
 </body>
 
 </html>
