@@ -120,6 +120,7 @@ export interface SavedGameState {
   currentPlayerIndex: 0 | 1
   scores: [number, number]
   passCount: number
+  moveCount?: number
   gameOver: boolean
   lastPlay?: { word: string; score: number; tileIds: number[] } | null
   wins?: [number, number]
@@ -135,6 +136,7 @@ type PeerMessage =
     }
   | { type: 'game-resume'; state: SavedGameState }
   | { type: 'move'; move: MoveData }
+  | { type: 'sync-check'; moveCount: number }
   | { type: 'leave' }
 
 export function isTurnConfigured(): boolean {
@@ -186,6 +188,39 @@ let onGameResumeCallback:
 
 let onDisconnectCallback: (() => void) | null = null
 let onHostReadyToStartCallback: (() => void) | null = null
+
+// Provides a sanitized snapshot of the live game (null when no game is
+// running); wired up by gameStore.
+let gameSnapshotProvider: (() => SavedGameState | null) | null = null
+export const setGameSnapshotProvider = (
+  fn: () => SavedGameState | null,
+) => {
+  gameSnapshotProvider = fn
+}
+
+const localMoveCount = (): number => {
+  const snap = gameSnapshotProvider?.()
+  // -1 when we have no game at all, so any started game beats us
+  return snap ? (snap.moveCount ?? 0) : -1
+}
+
+// Compare notes after a (re)connect: whichever peer has seen more moves
+// pushes its full state to the other. Converges in at most two messages.
+function handleSyncCheck(theirCount: number) {
+  const mine = localMoveCount()
+  pushNetworkDebug(`Sync check: local moves ${mine} vs remote ${theirCount}`)
+  if (!conn?.open) return
+  if (mine > theirCount) {
+    const snap = gameSnapshotProvider?.()
+    if (!snap) return
+    conn.send({
+      type: 'game-resume',
+      state: { ...snap, wins: useMultiplayerStore.getState().wins },
+    } satisfies PeerMessage)
+  } else if (mine < theirCount) {
+    conn.send({ type: 'sync-check', moveCount: mine } satisfies PeerMessage)
+  }
+}
 let intentionalDisconnect = false
 let remoteLeft = false
 let reconnectInterval: number | null = null
@@ -294,6 +329,17 @@ function peerIdFromCode(code: string): string {
   return `ms-${code.toUpperCase()}`
 }
 
+// Guest re-establishes its peer and redials the host until it succeeds.
+function startGuestReconnect(code: string) {
+  peer?.destroy()
+  peer = null
+  stopReconnecting()
+  reconnectInterval = setInterval(() => {
+    useMultiplayerStore.getState().joinGame(code)
+  }, 3000)
+  useMultiplayerStore.getState().joinGame(code)
+}
+
 function handleConnClose() {
   conn = null
   if (intentionalDisconnect) return
@@ -304,20 +350,11 @@ function handleConnClose() {
   }
   const state = useMultiplayerStore.getState()
   if (state.mode === 'multiplayer' && state.gameCode) {
-    console.log('Connection lost, attempting to reconnect...') // --- IGNORE ---
     useMultiplayerStore.setState({ peerConnected: false, reconnecting: true })
     const isGuest = new URLSearchParams(window.location.search).has('join')
     if (isGuest) {
-      console.log('Guest connection lost, attempting to reconnect as guest...') // --- IGNORE ---
-      // Guest must re-establish peer and reconnect to host
-      peer?.destroy()
-      peer = null
-      const code = state.gameCode
-      stopReconnecting()
-      reconnectInterval = setInterval(() => {
-        useMultiplayerStore.getState().joinGame(code)
-      }, 3000)
-      state.joinGame(code)
+      pushNetworkDebug('Guest connection lost — reconnecting')
+      startGuestReconnect(state.gameCode)
     }
   }
 }
@@ -388,17 +425,19 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
         watchConnection(conn!)
         // If we have a saved game state, resume it instead of starting fresh
         const saved = loadGameState()
-        const wins = get().wins
         if (saved && !saved.gameOver) {
-          conn!.send({
-            type: 'game-resume',
-            state: { ...saved, wins },
-          } satisfies PeerMessage)
+          // Restore from storage only when there's no live game in memory
+          // (page refresh); a mid-game guest reconnect keeps our live state.
+          if (!gameSnapshotProvider?.()) onGameResumeCallback?.(saved, 0)
           set({
-            wins: saved.wins ?? wins,
+            wins: saved.wins ?? get().wins,
             lastWinnerIndex: saved.lastWinnerIndex ?? null,
           })
-          onGameResumeCallback?.(saved, 0) // host is always player 0
+          // Compare notes: whoever has seen more moves pushes their state.
+          conn!.send({
+            type: 'sync-check',
+            moveCount: localMoveCount(),
+          } satisfies PeerMessage)
         } else {
           onHostReadyToStartCallback?.()
         }
@@ -414,6 +453,11 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
         const msg = raw as PeerMessage
         if (msg.type === 'move') {
           onRemoteMoveCallback?.(msg.move)
+        } else if (msg.type === 'sync-check') {
+          handleSyncCheck(msg.moveCount)
+        } else if (msg.type === 'game-resume') {
+          // The guest saw moves we missed — adopt their state.
+          onGameResumeCallback?.(msg.state, 0)
         } else if (msg.type === 'leave') {
           remoteLeft = true
         }
@@ -510,6 +554,18 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
           })
         } else if (msg.type === 'move') {
           onRemoteMoveCallback?.(msg.move)
+        } else if (msg.type === 'sync-check') {
+          // The channel demonstrably works — mark ourselves connected even
+          // if no game-resume follows (states may already match).
+          stopReconnecting()
+          set({
+            gameCode: code.toUpperCase(),
+            peerConnected: true,
+            reconnecting: false,
+            mode: 'multiplayer',
+            showLobbyModal: false,
+          })
+          handleSyncCheck(msg.moveCount)
         } else if (msg.type === 'leave') {
           remoteLeft = true
         }
@@ -609,6 +665,38 @@ networkDebugSink = (line) => {
     networkDebugLines: [...s.networkDebugLines, line].slice(-MAX_DEBUG_LINES),
   }))
 }
+
+// Resync when the app returns to the foreground (phone unlock / app
+// switch): timers and the WebRTC connection may have died while the page
+// was suspended, and moves sent in the meantime may have been missed.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return
+  const state = useMultiplayerStore.getState()
+  if (state.mode !== 'multiplayer' || !state.gameCode) return
+
+  if (peer && peer.disconnected && !peer.destroyed) peer.reconnect()
+
+  if (conn?.open) {
+    // Channel looks alive — verify we didn't miss any moves.
+    pushNetworkDebug('App resumed — sync check sent')
+    conn.send({
+      type: 'sync-check',
+      moveCount: localMoveCount(),
+    } satisfies PeerMessage)
+    return
+  }
+
+  // The connection died while backgrounded — rebuild it.
+  pushNetworkDebug('App resumed — rebuilding connection')
+  useMultiplayerStore.setState({ peerConnected: false, reconnecting: true })
+  const isGuest = new URLSearchParams(window.location.search).has('join')
+  if (isGuest) {
+    startGuestReconnect(state.gameCode)
+  } else {
+    // Re-register under the same code and wait for the guest to redial.
+    state.hostGame(state.gameCode)
+  }
+})
 
 // Auto-connect from URL params on page load
 export function autoConnect() {

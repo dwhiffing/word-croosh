@@ -20,6 +20,7 @@ import {
   type MoveData,
   type SavedGameState,
   saveGameState,
+  setGameSnapshotProvider,
   setOnDisconnect,
   setOnGameResume,
   setOnGameStart,
@@ -49,6 +50,7 @@ export interface GameState {
   swapIds: number[] // rack tiles marked for exchange
   blankPick: number | null // blank tile awaiting a letter choice (modal open)
   passCount: number // consecutive passes; 2 ends the game
+  moveCount: number // total turns taken; used to resync after reconnects
   gameOver: boolean
   showInstructionsModal: boolean
   showTwoLetterModal: boolean
@@ -210,6 +212,7 @@ export const useGameStore = create<GameStore>((set, get) => {
         currentPlayerIndex: saved.currentPlayerIndex,
         scores: saved.scores,
         passCount: saved.passCount,
+        moveCount: saved.moveCount ?? 0,
         gameOver: saved.gameOver,
         lastPlay: saved.lastPlay ?? null,
       })
@@ -474,6 +477,7 @@ function initializeGameState(): Omit<GameState, 'cards'> {
     scores: [0, 0],
     pending: [],
     passCount: 0,
+    moveCount: 0,
     gameOver: false,
     showInstructionsModal: false,
     showTwoLetterModal: false,
@@ -860,6 +864,7 @@ function endTurn(
     swapMode: false,
     swapIds: [],
     passCount,
+    moveCount: state.moveCount + 1,
     gameOver,
   })
   if (gameOver) finalizeScores(get, set)
@@ -905,26 +910,38 @@ setOnDisconnect(() =>
   useGameStore.setState({ ...initializeGameState(), cards: [] }),
 )
 
+// Sanitized snapshot for persistence and peer resync. Uncommitted tiles are
+// returned to the rack — the pending list isn't part of shared state, and
+// restoring them on a board would strand them there.
+function snapshotGameState(state: GameState): SavedGameState {
+  let cards = state.cards
+  for (const id of state.pending) {
+    cards = returnTileToRack(cards, id, state.localPlayerIndex)
+  }
+  return {
+    cards,
+    currentPlayerIndex: state.currentPlayerIndex,
+    scores: state.scores,
+    passCount: state.passCount,
+    moveCount: state.moveCount,
+    gameOver: state.gameOver,
+    lastPlay: state.lastPlay,
+  }
+}
+
+// Lets the multiplayer layer compare/exchange state after a reconnect.
+setGameSnapshotProvider(() => {
+  const s = useGameStore.getState()
+  return s.cards.length > 0 ? snapshotGameState(s) : null
+})
+
 // Persist state on the host so a refresh / reconnect can resume.
 useGameStore.subscribe((state) => {
   const mp = useMultiplayerStore.getState()
   if (mp.mode !== 'multiplayer' || state.localPlayerIndex !== 0) return
   if (state.dealPhase !== -1) return
   if (state.gameOver) return clearGameState()
-  // The pending list isn't persisted, so snapshot uncommitted tiles back on
-  // the rack — otherwise a refresh mid-word strands them on the board.
-  let cards = state.cards
-  for (const id of state.pending) {
-    cards = returnTileToRack(cards, id, state.localPlayerIndex)
-  }
-  saveGameState({
-    cards,
-    currentPlayerIndex: state.currentPlayerIndex,
-    scores: state.scores,
-    passCount: state.passCount,
-    gameOver: state.gameOver,
-    lastPlay: state.lastPlay,
-  })
+  saveGameState(snapshotGameState(state))
 })
 
 // exported for the board UI
