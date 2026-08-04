@@ -9,6 +9,7 @@ import {
 } from "../utils/constants";
 import { useGameStore, validatePlay } from "../utils/gameStore";
 import { useMultiplayerStore } from "../utils/multiplayerStore";
+import { BlankTileModal } from "./BlankTileModal";
 import Tile from "./Card";
 import { GameOverModal } from "./GameOverModal";
 import { Header } from "./Header";
@@ -208,6 +209,7 @@ function App() {
 			)}
 
 			<InstructionsModal />
+			<BlankTileModal />
 			<TwoLetterWordsModal />
 			<UnseenTilesModal />
 			<GameOverModal />

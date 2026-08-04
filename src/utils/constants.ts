@@ -1,6 +1,6 @@
 // ── Scrabble constants ──────────────────────────────────────────────
 
-export const CARD_TRANSITION_DURATION = 50;
+export const CARD_TRANSITION_DURATION = 150;
 
 export const BOARD_SIZE = 15; // 15x15
 export const RACK_SIZE = 7;

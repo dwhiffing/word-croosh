@@ -47,6 +47,7 @@ export interface GameState {
   lastPlay: { word: string; score: number; tileIds: number[] } | null
   swapMode: boolean // passing: picking rack tiles to exchange with the bag
   swapIds: number[] // rack tiles marked for exchange
+  blankPick: number | null // blank tile awaiting a letter choice (modal open)
   passCount: number // consecutive passes; 2 ends the game
   gameOver: boolean
   showInstructionsModal: boolean
@@ -77,6 +78,8 @@ interface GameStore extends GameState {
   closeInstructions: () => void
   openTwoLetterWords: () => void
   closeTwoLetterWords: () => void
+  chooseBlankLetter: (letter: string) => void
+  cancelBlankPick: () => void
   openUnseenTiles: () => void
   closeUnseenTiles: () => void
 }
@@ -218,7 +221,8 @@ export const useGameStore = create<GameStore>((set, get) => {
         commitPlacements(move.placements, them, get, set)
       } else if (move.type === 'swap') {
         exchangeTiles(move.tileIds, them, get, set)
-        endTurn(them, true, get, set)
+        // a swap ends the turn but is not a pass (doesn't end the game)
+        endTurn(them, false, get, set)
       } else if (move.type === 'pass') {
         endTurn(them, true, get, set)
       }
@@ -426,7 +430,8 @@ export const useGameStore = create<GameStore>((set, get) => {
       if (ids.length === 0) return get().passTurn()
       useMultiplayerStore.getState().sendMove({ type: 'swap', tileIds: ids })
       exchangeTiles(ids, us, get, set)
-      endTurn(us, true, get, set)
+      // a swap ends the turn but is not a pass (doesn't end the game)
+      endTurn(us, false, get, set)
     },
 
     cancelSwap: () => set({ swapMode: false, swapIds: [] }),
@@ -435,6 +440,19 @@ export const useGameStore = create<GameStore>((set, get) => {
     closeInstructions: () => set({ showInstructionsModal: false }),
     openTwoLetterWords: () => set({ showTwoLetterModal: true }),
     closeTwoLetterWords: () => set({ showTwoLetterModal: false }),
+
+    // Complete a blank-tile placement with the letter picked in the modal.
+    chooseBlankLetter: (letter: string) => {
+      const state = get()
+      const id = state.blankPick
+      set({ blankPick: null })
+      if (id == null || !/^[A-Z]$/.test(letter)) return
+      const card = state.cards[id]
+      // the tile must still be on our rack (turn could have changed)
+      if (card.pileIndex !== RACK_PILE[state.localPlayerIndex]) return
+      placeOnSelected(card, letter, get, set)
+    },
+    cancelBlankPick: () => set({ blankPick: null }),
     openUnseenTiles: () => set({ showUnseenModal: true }),
     closeUnseenTiles: () => set({ showUnseenModal: false }),
   }
@@ -449,6 +467,7 @@ function initializeGameState(): Omit<GameState, 'cards'> {
     lastPlay: null,
     swapMode: false,
     swapIds: [],
+    blankPick: null,
     dealPhase: 0,
     currentPlayerIndex: 0,
     localPlayerIndex: 0,
@@ -553,7 +572,8 @@ const returnTileToRack = (
 }
 
 // Play a rack tile onto the currently selected square, then advance the
-// selection in the current direction to the next empty square.
+// selection in the current direction to the next empty square. Blank tiles
+// first open the letter-picker modal; placement resumes in chooseBlankLetter.
 const playSelectedTile = (
   card: CardType,
   get: () => GameStore,
@@ -562,18 +582,24 @@ const playSelectedTile = (
   const state = get()
   const square = state.selectedSquare
   if (square == null || tileOnSquare(square, state.cards)) return
-
-  // Assign a letter to a blank tile on first placement.
-  let letter = card.letter
-  if (card.isBlank && !letter) {
-    const input = window.prompt('Blank tile — choose a letter (A–Z):')
-    const chosen = (input ?? '').trim().toUpperCase().slice(0, 1)
-    if (!/^[A-Z]$/.test(chosen)) return
-    letter = chosen
+  if (card.isBlank && !card.letter) {
+    set({ blankPick: card.id })
+    return
   }
+  placeOnSelected(card, card.letter, get, set)
+}
 
+const placeOnSelected = (
+  card: CardType,
+  letter: string,
+  get: () => GameStore,
+  set: (s: Partial<GameStore>) => void,
+) => {
+  const state = get()
+  const square = state.selectedSquare
+  if (square == null || tileOnSquare(square, state.cards)) return
   // cardPileIndex is left untouched: it keeps the rack slot the tile came
-  // from, so taking it back (Back / tap / Recall) restores its spot.
+  // from, so taking it back (Back / Recall) restores its spot.
   const cards = state.cards.map((c) =>
     c.id === card.id ? { ...c, pileIndex: square, letter } : c,
   )
