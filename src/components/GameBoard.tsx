@@ -24,30 +24,35 @@ function App() {
 	const { showLobbyModal, openLobby, hostGame, peerConnected } =
 		useMultiplayerStore();
 	const state = useGameStore(
-		useShallow((s) => ({
-			cardCount: s.cards.length,
-			onMouseUp: s.onMouseUp,
-			onMouseDown: s.onMouseDown,
-			onMouseMove: s.onMouseMove,
-			localPlayerIndex: s.localPlayerIndex,
-			currentPlayerIndex: s.currentPlayerIndex,
-			scores: s.scores,
-			pending: s.pending,
-			canSubmit: s.pending.length > 0 && validatePlay(s.cards, s.pending).ok,
-			lastPlay: s.lastPlay,
-			gameOver: s.gameOver,
-			submitTurn: s.submitTurn,
-			recallTiles: s.recallTiles,
-			undoLastTile: s.undoLastTile,
-			shuffleRack: s.shuffleRack,
-			swapMode: s.swapMode,
-			swapCount: s.swapIds.length,
-			// swapping on a pass needs at least 8 tiles left in the bag
-			canSwap: s.cards.filter((c) => c.pileIndex === BAG_PILE).length >= 8,
-			startPass: s.startPass,
-			confirmSwap: s.confirmSwap,
-			cancelSwap: s.cancelSwap,
-		})),
+		useShallow((s) => {
+			const play =
+				s.pending.length > 0 ? validatePlay(s.cards, s.pending) : null;
+			return {
+				cardCount: s.cards.length,
+				onMouseUp: s.onMouseUp,
+				onMouseDown: s.onMouseDown,
+				onMouseMove: s.onMouseMove,
+				localPlayerIndex: s.localPlayerIndex,
+				currentPlayerIndex: s.currentPlayerIndex,
+				scores: s.scores,
+				pending: s.pending,
+				canSubmit: play?.ok === true,
+				pendingScore: play?.ok ? play.score : null,
+				lastPlay: s.lastPlay,
+				gameOver: s.gameOver,
+				submitTurn: s.submitTurn,
+				recallTiles: s.recallTiles,
+				undoLastTile: s.undoLastTile,
+				shuffleRack: s.shuffleRack,
+				swapMode: s.swapMode,
+				swapCount: s.swapIds.length,
+				// swapping on a pass needs at least 8 tiles left in the bag
+				canSwap: s.cards.filter((c) => c.pileIndex === BAG_PILE).length >= 8,
+				startPass: s.startPass,
+				confirmSwap: s.confirmSwap,
+				cancelSwap: s.cancelSwap,
+			};
+		}),
 	);
 
 	useWindowEvent("resize", debounce(useForceUpdate(), 100));
@@ -133,6 +138,8 @@ function App() {
 												disabled={!state.canSubmit}
 											>
 												Submit
+												{state.pendingScore != null &&
+													` (${state.pendingScore})`}
 											</button>
 											<button
 												className="button px-3 py-1"
