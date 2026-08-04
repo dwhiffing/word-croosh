@@ -17,9 +17,9 @@ export default defineConfig({
 				"Roboto-Italic.ttf",
 			],
 			manifest: {
-				name: "Word Croosh",
-				short_name: "Word Croosh",
-				description: "Word Croosh",
+				name: "WordCroosh",
+				short_name: "WordCroosh",
+				description: "WordCroosh",
 				theme_color: "#2d6a4f",
 				background_color: "#2d6a4f",
 				display: "fullscreen",
