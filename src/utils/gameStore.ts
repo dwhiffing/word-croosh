@@ -42,13 +42,16 @@ export interface GameState {
   pending: number[] // tile ids placed on the board this turn, not yet committed
   selectedSquare: number | null // board square tiles will play onto
   selectedDir: 'right' | 'down' // direction the selection advances after a play
-  // most recent committed word; tileIds are its newly placed tiles
+  // most recent committed play: every word it formed (comma-separated),
+  // the move's total score, and its newly placed tiles
   lastPlay: { word: string; score: number; tileIds: number[] } | null
   swapMode: boolean // passing: picking rack tiles to exchange with the bag
   swapIds: number[] // rack tiles marked for exchange
   passCount: number // consecutive passes; 2 ends the game
   gameOver: boolean
   showInstructionsModal: boolean
+  showTwoLetterModal: boolean
+  showUnseenModal: boolean
 }
 
 interface GameStore extends GameState {
@@ -72,6 +75,10 @@ interface GameStore extends GameState {
   cancelSwap: () => void
   openInstructions: () => void
   closeInstructions: () => void
+  openTwoLetterWords: () => void
+  closeTwoLetterWords: () => void
+  openUnseenTiles: () => void
+  closeUnseenTiles: () => void
 }
 
 let cursorDownAt = 0
@@ -425,6 +432,10 @@ export const useGameStore = create<GameStore>((set, get) => {
 
     openInstructions: () => set({ showInstructionsModal: true }),
     closeInstructions: () => set({ showInstructionsModal: false }),
+    openTwoLetterWords: () => set({ showTwoLetterModal: true }),
+    closeTwoLetterWords: () => set({ showTwoLetterModal: false }),
+    openUnseenTiles: () => set({ showUnseenModal: true }),
+    closeUnseenTiles: () => set({ showUnseenModal: false }),
   }
 })
 
@@ -445,6 +456,8 @@ function initializeGameState(): Omit<GameState, 'cards'> {
     passCount: 0,
     gameOver: false,
     showInstructionsModal: false,
+    showTwoLetterModal: false,
+    showUnseenModal: false,
   }
 }
 
@@ -762,7 +775,7 @@ function commitPlacements(
     cards,
     scores,
     lastPlay: result.ok
-      ? { word: result.words[0], score, tileIds: pendingIds }
+      ? { word: result.words.join(', '), score, tileIds: pendingIds }
       : get().lastPlay,
   })
   endTurn(playerIndex, false, get, set)

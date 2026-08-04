@@ -26,3 +26,8 @@ export function isValidWord(word: string): boolean {
   if (!words) return true // not loaded yet → don't block play
   return words.has(word.toUpperCase())
 }
+
+export function getTwoLetterWords(): string[] {
+  if (!words) return []
+  return [...words].filter((w) => w.length === 2).sort()
+}

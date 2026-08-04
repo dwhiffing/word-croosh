@@ -16,6 +16,8 @@ import { InstructionsModal } from "./InstructionsModal";
 import { LobbyModal } from "./LobbyModal";
 import { NetworkDebugPanel } from "./NetworkDebugPanel";
 import { Rack, Square } from "./Pile";
+import { TwoLetterWordsModal } from "./TwoLetterWordsModal";
+import { UnseenTilesModal } from "./UnseenTilesModal";
 
 function App() {
 	const { showLobbyModal, openLobby, hostGame, peerConnected } =
@@ -207,6 +209,8 @@ function App() {
 			)}
 
 			<InstructionsModal />
+			<TwoLetterWordsModal />
+			<UnseenTilesModal />
 			<GameOverModal />
 			<LobbyModal key={showLobbyModal ? "show" : "hide"} />
 			<NetworkDebugPanel />

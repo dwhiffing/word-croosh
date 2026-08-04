@@ -6,6 +6,9 @@ import { HamburgerSVG } from './svg'
 export function Header() {
   // const newGame = useGameStore((s) => s.newGame)
   const openInstructions = useGameStore((s) => s.openInstructions)
+  const openTwoLetterWords = useGameStore((s) => s.openTwoLetterWords)
+  const openUnseenTiles = useGameStore((s) => s.openUnseenTiles)
+  const gameActive = useGameStore((s) => s.cards.length > 0)
   const { mode, openLobby, disconnect, showNetworkDebug, toggleNetworkDebug } =
     useMultiplayerStore()
 
@@ -28,6 +31,18 @@ export function Header() {
           className="w-10"
           label={<HamburgerSVG />}
           items={[
+            ...(gameActive
+              ? [
+                  {
+                    label: 'Two Letter Words',
+                    onClick: () => openTwoLetterWords(),
+                  },
+                  {
+                    label: 'Unseen Tiles',
+                    onClick: () => openUnseenTiles(),
+                  },
+                ]
+              : []),
             ...(mode !== 'multiplayer'
               ? [
                   {
