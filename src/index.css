@@ -1,0 +1,227 @@
+@import "tailwindcss";
+
+@custom-variant touch (@media (pointer: coarse));
+
+@theme {
+  --color-surface: #2d6a4f;
+  --color-card-back: #b58b46;
+  --color-on-surface: #1b4332;
+  --color-on-surface-active: #143026;
+  --color-tile: #e9c893;
+  --color-tile-text: #4a2f10;
+  --color-board: #cfe3d6;
+  --color-square: #2f7d5b;
+  --color-square-border: #24634a;
+  --color-overlay: rgb(0 0 0 / 0.27);
+  --color-backdrop: rgb(0 0 0 / 0.4);
+
+  --z-index-header: 999;
+  --z-index-modal: 10000;
+}
+
+@layer base {
+  @font-face {
+    font-family: "Roboto";
+    src: url("/Roboto.ttf") format("truetype");
+    font-style: normal;
+  }
+  @font-face {
+    font-family: "Roboto";
+    src: url("/Roboto-Italic.ttf") format("truetype");
+    font-style: italic;
+  }
+
+  :root {
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+
+    /* A tile/square is 1/16 of the smaller viewport dimension (15 cols + margin). */
+    --base-size: min(6.2vw, calc((100dvh - 220px) / 15), 44px);
+  }
+
+  html,
+  body {
+    height: 100dvh;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  body {
+    @apply bg-on-surface;
+    color: white;
+    font-family: "Roboto", sans-serif;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    touch-action: none;
+  }
+  b {
+    font-weight: 800;
+  }
+  i {
+    font-style: italic;
+  }
+  ul {
+    list-style: disc;
+    padding-left: 24px;
+  }
+
+  .button {
+    @apply flex justify-center items-center px-2 py-1 min-w-10 rounded bg-on-surface hover:bg-on-surface-active transition-colors font-bold cursor-pointer disabled:opacity-40 disabled:cursor-default;
+  }
+
+  /* ── Board grid ─────────────────────────────────────────────── */
+  .board {
+    display: grid;
+    gap: 1px;
+    padding: 3px;
+    background: var(--color-square-border);
+    border-radius: 4px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  }
+
+  .pile.square {
+    width: var(--base-size);
+    aspect-ratio: 1;
+    background: var(--color-square);
+    position: relative;
+  }
+  .pile.square.bonus-TW {
+    background: #e05a4c;
+  }
+  .pile.square.bonus-DW {
+    background: #e59aa0;
+  }
+  .pile.square.bonus-TL {
+    background: #3b7fb0;
+  }
+  .pile.square.bonus-DL {
+    background: #a9d0e6;
+  }
+  .pile.square.center {
+    background: #e59aa0;
+  }
+  .square-label {
+    font-size: calc(var(--base-size) * 0.3);
+    font-weight: 800;
+    color: rgba(255, 255, 255, 0.85);
+    pointer-events: none;
+  }
+  .pile.square.bonus-DL .square-label,
+  .pile.square.bonus-TL .square-label {
+    color: rgba(0, 0, 0, 0.55);
+  }
+  .square-star {
+    font-size: calc(var(--base-size) * 0.55);
+    color: rgba(74, 47, 16, 0.8);
+    pointer-events: none;
+  }
+  /* invisible hit-area so drops register on the square */
+  .pile.square::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: auto;
+  }
+
+  /* ── Racks ──────────────────────────────────────────────────── */
+  .rack-wrap {
+    height: calc(var(--base-size) * 1.4);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .pile.rack {
+    width: calc(var(--base-size) * 1.15 * 7);
+    height: calc(var(--base-size) * 1.3);
+    background: var(--color-card-back);
+    border-radius: 6px;
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.4);
+    position: relative;
+  }
+  .pile.rack::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: auto;
+  }
+
+  /* ── Tiles (reused card system) ─────────────────────────────── */
+  .card {
+    width: var(--base-size);
+    aspect-ratio: 1;
+    position: absolute;
+    pointer-events: none;
+    border-radius: calc(var(--base-size) * 0.12);
+  }
+  /* Inactive tiles get a hit area so they can be picked up; the tile being
+     dragged (.active) has none, so elementFromPoint sees the square beneath. */
+  .card.inactive::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: auto;
+  }
+  .card .card-front,
+  .card .card-back {
+    border-radius: calc(var(--base-size) * 0.12);
+  }
+  .card .tile-front {
+    @apply flex justify-center items-center h-full w-full relative;
+    background: var(--color-tile);
+    color: var(--color-tile-text);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  }
+  .card .card-back {
+    @apply absolute inset-0 opacity-0 transition-opacity duration-300;
+    background: var(--color-card-back);
+    background-image: radial-gradient(rgba(0, 0, 0, 0.15) 20%, transparent 20%);
+    background-size: calc(var(--base-size) * 0.3) calc(var(--base-size) * 0.3);
+  }
+  .card.face-down .card-back {
+    @apply opacity-100;
+  }
+  .tile-letter {
+    font-size: calc(var(--base-size) * 0.55);
+    font-weight: 800;
+    line-height: 1;
+  }
+  .tile-value {
+    position: absolute;
+    bottom: calc(var(--base-size) * 0.06);
+    right: calc(var(--base-size) * 0.1);
+    font-size: calc(var(--base-size) * 0.26);
+    font-weight: 700;
+  }
+
+  /* ── Status / scores ────────────────────────────────────────── */
+  .score-row {
+    display: flex;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.95rem;
+  }
+  .active-player {
+    color: #ffe08a;
+  }
+  .status-row {
+    min-height: 3rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+  }
+  .status-row .msg {
+    font-size: 0.9rem;
+    opacity: 0.9;
+    text-align: center;
+  }
+  .controls {
+    display: flex;
+    gap: 0.5rem;
+  }
+}
