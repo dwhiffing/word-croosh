@@ -16,8 +16,15 @@ export function Modal({
         'fixed inset-0 flex items-center justify-center bg-backdrop z-modal transition-opacity duration-300 overflow-hidden',
         !show && 'opacity-0 pointer-events-none',
       )}
-      onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()}>{children}</div>
+      // Dismiss on pointerdown (a fresh tap), not click: modals opened from a
+      // pointerup (e.g. the blank-tile picker) would otherwise be closed by
+      // the synthesized click that follows the same tap on mobile.
+      onPointerDown={onClose}>
+      <div
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}>
+        {children}
+      </div>
     </div>
   )
 }
