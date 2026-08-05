@@ -29,3 +29,5 @@ solve-check-rs/solutions
 .claude
 
 .env
+# wrangler local secrets (VAPID private key)
+.dev.vars

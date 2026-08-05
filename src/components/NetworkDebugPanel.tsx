@@ -10,7 +10,10 @@ export function NetworkDebugPanel() {
     <div className="pointer-events-none fixed inset-x-0 bottom-2 z-header flex justify-center px-2 lg:bottom-4">
       <div className="pointer-events-auto w-full max-w-3xl rounded-lg border border-white/15 bg-black/55 shadow-lg">
         <div className="flex items-center justify-between border-b border-white/15 px-3 py-2 text-xs lg:text-sm">
-          <span className="font-bold tracking-wide">Network Debug</span>
+          <span className="font-bold tracking-wide">
+            Network Debug{' '}
+            <span className="font-normal text-white/50">{__BUILD_TIME__}</span>
+          </span>
           <button
             className="button pointer-events-auto py-1! text-xs"
             onClick={checkNetworkPath}>

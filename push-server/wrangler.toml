@@ -1,0 +1,6 @@
+name = "word-croosh-push"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+[vars]
+VAPID_PUBLIC_KEY = "BPZ_aq1kjkZwAwoawr3prwDupxjy9GPnD4cZBXQ2xKPssNNVHF6L-Y1YL-IBAHRZxMpII55i31OkJgiJqEoTUlg"

@@ -1,3 +1,6 @@
+// Build timestamp injected by vite.config.ts `define` ("dev" in dev mode).
+declare const __BUILD_TIME__: string
+
 // A tile is rendered by the same machinery that used to render cards.
 // `pileIndex`/`cardPileIndex` position it (see constants.ts pile scheme);
 // `letter` is the face letter, `value` its point value.

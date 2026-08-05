@@ -1,5 +1,6 @@
 import { useGameStore } from "../utils/gameStore";
 import { useMultiplayerStore } from "../utils/multiplayerStore";
+import { pushSupported } from "../utils/push";
 import { Dropdown } from "./Dropdown";
 import { HamburgerSVG } from "./svg";
 
@@ -9,8 +10,15 @@ export function Header() {
 	const openTwoLetterWords = useGameStore((s) => s.openTwoLetterWords);
 	const openUnseenTiles = useGameStore((s) => s.openUnseenTiles);
 	const gameActive = useGameStore((s) => s.cards.length > 0);
-	const { mode, openLobby, disconnect, showNetworkDebug, toggleNetworkDebug } =
-		useMultiplayerStore();
+	const {
+		mode,
+		openLobby,
+		disconnect,
+		notificationsEnabled,
+		enableNotifications,
+		showNetworkDebug,
+		toggleNetworkDebug,
+	} = useMultiplayerStore();
 
 	return (
 		<div className="flex justify-between items-center text-white py-2 px-3 lg:p-5 relative z-header pointer-events-none">
@@ -41,6 +49,14 @@ export function Header() {
 									{
 										label: "Unseen Tiles",
 										onClick: () => openUnseenTiles(),
+									},
+								]
+							: []),
+						...(pushSupported() && !notificationsEnabled
+							? [
+									{
+										label: "Enable Notifications",
+										onClick: () => void enableNotifications(),
 									},
 								]
 							: []),

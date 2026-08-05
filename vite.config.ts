@@ -5,6 +5,9 @@ import { VitePWA } from "vite-plugin-pwa";
 
 // https://vite.dev/config/
 export default defineConfig({
+	define: {
+		__BUILD_TIME__: JSON.stringify(new Date().toISOString().slice(0, 16)),
+	},
 	plugins: [
 		tailwindcss(),
 		react(),
@@ -47,6 +50,7 @@ export default defineConfig({
 			},
 			workbox: {
 				globPatterns: ["**/*.{js,css,html,ico,png,svg,ttf,woff,woff2}"],
+				importScripts: ["push-sw.js"],
 			},
 		}),
 	],
