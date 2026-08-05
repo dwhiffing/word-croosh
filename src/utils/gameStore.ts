@@ -286,6 +286,8 @@ export const useGameStore = create<GameStore>((set, get) => {
         if (posDiff <= 5 && timeDiff <= 300) {
           const state = get()
           if (state.swapMode) {
+            // marking tiles for exchange needs 8+ tiles left in the bag
+            if (tilesInPile(BAG_PILE, state.cards).length < 8) return
             set({
               swapIds: state.swapIds.includes(activeCard.id)
                 ? state.swapIds.filter((id) => id !== activeCard.id)
@@ -409,18 +411,14 @@ export const useGameStore = create<GameStore>((set, get) => {
       endTurn(us, true, get, set)
     },
 
-    // Pass with an optional tile exchange: with 8+ tiles in the bag, enter
-    // swap mode (tap rack tiles to mark them, then confirm); with fewer,
-    // exchanging isn't allowed, so pass immediately.
+    // Enter the pass/swap confirm state. With 8+ tiles in the bag the
+    // player may also mark rack tiles to exchange; with fewer this is a
+    // plain "really pass?" confirmation.
     startPass: () => {
       const state = get()
       const us = state.localPlayerIndex
       if (state.currentPlayerIndex !== us || state.gameOver) return
-      if (tilesInPile(BAG_PILE, state.cards).length >= 8) {
-        set({ swapMode: true, swapIds: [] })
-      } else {
-        get().passTurn()
-      }
+      set({ swapMode: true, swapIds: [] })
     },
 
     confirmSwap: () => {

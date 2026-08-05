@@ -92,7 +92,11 @@ function App() {
 							{!state.gameOver && (
 								<div className="turn-row">
 									{state.swapMode ? (
-										"Tap tiles to swap, then confirm"
+										state.canSwap ? (
+											"Tap tiles to swap, then confirm"
+										) : (
+											"Pass your turn?"
+										)
 									) : (
 										<>
 											{state.lastPlay &&
