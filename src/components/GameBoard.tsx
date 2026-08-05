@@ -8,7 +8,7 @@ import {
 	RACK_PILE,
 } from "../utils/constants";
 import { useGameStore, validatePlay } from "../utils/gameStore";
-import { useMultiplayerStore } from "../utils/multiplayerStore";
+import { resyncNow, useMultiplayerStore } from "../utils/multiplayerStore";
 import { BlankTileModal } from "./BlankTileModal";
 import Tile from "./Card";
 import { GameOverModal } from "./GameOverModal";
@@ -170,6 +170,13 @@ function App() {
 											onClick={state.shuffleRack}
 										>
 											Shuffle
+										</button>
+										<button
+											className="button px-3 py-1"
+											onClick={() => resyncNow()}
+											title="Refresh connection"
+										>
+											🔄
 										</button>
 									</div>
 								)}

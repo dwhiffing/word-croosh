@@ -606,6 +606,11 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 					// Code collision — retry with a new code
 					get().hostGame();
 				}
+			} else if ((err as { type?: string }).type === "network") {
+				// Transient broker-socket loss (e.g. the app was backgrounded).
+				// keepBrokerRegistered reconnects with the same code — don't
+				// flip the lobby to the join phase over it.
+				pushNetworkDebug(`Host broker hiccup (recovering): ${msg}`);
 			} else {
 				set({ error: `Error: ${msg}`, lobbyPhase: "joining" });
 				pushNetworkDebug(`Host peer error: ${msg}`);
@@ -859,10 +864,21 @@ function rebuildConnection() {
 // Resync when the app returns to the foreground (phone unlock / app
 // switch): timers and the WebRTC connection may have died while the page
 // was suspended, and moves sent in the meantime may have been missed.
-document.addEventListener("visibilitychange", () => {
-	if (document.visibilityState !== "visible") return;
+// Verify the connection and resync state with the peer. Runs on foreground
+// resume and via the manual "Refresh" menu item.
+export function resyncNow() {
 	const state = useMultiplayerStore.getState();
-	if (state.mode !== "multiplayer" || !state.gameCode) return;
+	if (!state.gameCode) return;
+
+	if (state.mode !== "multiplayer") {
+		// Pre-game hosting lobby: re-register our code with the broker so a
+		// guest can still join after we were backgrounded.
+		if (state.lobbyPhase === "hosting" && !state.peerConnected) {
+			if (!peer || peer.destroyed) state.hostGame(state.gameCode);
+			else if (peer.disconnected) peer.reconnect();
+		}
+		return;
+	}
 
 	if (peer && peer.disconnected && !peer.destroyed) peer.reconnect();
 
@@ -870,7 +886,7 @@ document.addEventListener("visibilitychange", () => {
 		// The channel *claims* to be alive, but our state may be stale (close
 		// events queue up while the page is suspended). Send a sync check —
 		// it is always answered — and rebuild if nothing comes back.
-		pushNetworkDebug("App resumed — sync check sent");
+		pushNetworkDebug("Resync — sync check sent");
 		const sentAt = Date.now();
 		conn.send({
 			type: "sync-check",
@@ -880,14 +896,19 @@ document.addEventListener("visibilitychange", () => {
 		resumeCheckTimer = setTimeout(() => {
 			if (document.visibilityState !== "visible") return;
 			if (lastPeerMessageAt >= sentAt) return; // got a reply — it's alive
-			pushNetworkDebug("No reply after resume — connection is dead");
+			pushNetworkDebug("No reply to sync check — connection is dead");
 			rebuildConnection();
 		}, 3500);
 		return;
 	}
 
-	// The connection died while backgrounded — rebuild it.
+	// The connection is gone — rebuild it.
 	rebuildConnection();
+}
+
+document.addEventListener("visibilitychange", () => {
+	if (document.visibilityState !== "visible") return;
+	resyncNow();
 });
 
 // Auto-connect from URL params on page load
