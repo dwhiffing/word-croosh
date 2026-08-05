@@ -71,7 +71,7 @@ function App() {
 				<Header />
 
 				{started && (
-					<div className="flex-1 flex flex-col items-center justify-between min-h-0 py-2">
+					<div className="flex-1 flex flex-col items-center min-h-0 py-2 pb-20 gap-4">
 						{/* Scores */}
 						<div className="flex flex-col">
 							<div className="score-row">
@@ -97,87 +97,88 @@ function App() {
 								</div>
 							)}
 						</div>
+						<div className="flex flex-col gap-4">
+							{/* Board */}
+							<div
+								className="board"
+								style={{ gridTemplateColumns: `repeat(${BOARD_SIZE}, 1fr)` }}
+							>
+								{Array.from({ length: BOARD_SIZE * BOARD_SIZE }).map((_, i) => (
+									<Square key={i} pileIndex={FIRST_SQUARE_PILE + i} />
+								))}
+							</div>
 
-						{/* Board */}
-						<div
-							className="board"
-							style={{ gridTemplateColumns: `repeat(${BOARD_SIZE}, 1fr)` }}
-						>
-							{Array.from({ length: BOARD_SIZE * BOARD_SIZE }).map((_, i) => (
-								<Square key={i} pileIndex={FIRST_SQUARE_PILE + i} />
-							))}
-						</div>
-
-						{/* Status + controls */}
-						<div className="status-row">
-							{!state.gameOver && (
-								<div className="controls">
-									{myTurn && state.swapMode && (
-										<>
-											<button
-												className="button px-3 py-1"
-												onClick={state.confirmSwap}
-											>
-												{state.swapCount > 0
-													? `Swap ${state.swapCount}`
-													: "Pass"}
-											</button>
-											<button
-												className="button px-3 py-1"
-												onClick={state.cancelSwap}
-											>
-												Cancel
-											</button>
-										</>
-									)}
-									{myTurn && !state.swapMode && (
-										<>
-											<button
-												className="button px-3 py-1"
-												onClick={state.submitTurn}
-												disabled={!state.canSubmit}
-											>
-												Submit
-												{state.pendingScore != null &&
-													` (${state.pendingScore})`}
-											</button>
-											<button
-												className="button px-3 py-1"
-												onClick={state.recallTiles}
-												disabled={state.pending.length === 0}
-											>
-												Recall
-											</button>
-											{state.pending.length > 0 ? (
+							{/* Status + controls */}
+							<div className="status-row">
+								{!state.gameOver && (
+									<div className="controls">
+										{myTurn && state.swapMode && (
+											<>
 												<button
 													className="button px-3 py-1"
-													onClick={state.undoLastTile}
+													onClick={state.confirmSwap}
 												>
-													Back
+													{state.swapCount > 0
+														? `Swap ${state.swapCount}`
+														: "Pass"}
 												</button>
-											) : (
 												<button
 													className="button px-3 py-1"
-													onClick={state.startPass}
+													onClick={state.cancelSwap}
 												>
-													{state.canSwap ? "Swap" : "Pass"}
+													Cancel
 												</button>
-											)}
-										</>
-									)}
-									<button
-										className="button px-3 py-1"
-										onClick={state.shuffleRack}
-									>
-										Shuffle
-									</button>
-								</div>
-							)}
-						</div>
+											</>
+										)}
+										{myTurn && !state.swapMode && (
+											<>
+												<button
+													className="button px-3 py-1"
+													onClick={state.submitTurn}
+													disabled={!state.canSubmit}
+												>
+													Submit
+													{state.pendingScore != null &&
+														` (${state.pendingScore})`}
+												</button>
+												<button
+													className="button px-3 py-1"
+													onClick={state.recallTiles}
+													disabled={state.pending.length === 0}
+												>
+													Recall
+												</button>
+												{state.pending.length > 0 ? (
+													<button
+														className="button px-3 py-1"
+														onClick={state.undoLastTile}
+													>
+														Back
+													</button>
+												) : (
+													<button
+														className="button px-3 py-1"
+														onClick={state.startPass}
+													>
+														{state.canSwap ? "Swap" : "Pass"}
+													</button>
+												)}
+											</>
+										)}
+										<button
+											className="button px-3 py-1"
+											onClick={state.shuffleRack}
+										>
+											Shuffle
+										</button>
+									</div>
+								)}
+							</div>
 
-						{/* Own rack (fanned face up) */}
-						<div className="rack-wrap own">
-							<Rack pileIndex={ownRack} />
+							{/* Own rack (fanned face up) */}
+							<div className="rack-wrap own">
+								<Rack pileIndex={ownRack} />
+							</div>
 						</div>
 					</div>
 				)}

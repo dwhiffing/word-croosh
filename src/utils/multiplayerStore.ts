@@ -290,6 +290,9 @@ let reconnectInterval: number | null = null;
 // zombie connections after the page resumes from suspension.
 let lastPeerMessageAt = 0;
 let resumeCheckTimer: ReturnType<typeof setTimeout> | null = null;
+// Retries for re-registering the host code while the broker still holds our
+// previous (dead) registration; reset once registration succeeds.
+let hostRegisterRetries = 0;
 
 function watchConnection(c: DataConnection) {
 	const pc = c.peerConnection;
@@ -503,19 +506,28 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 		pushNetworkDebug(`Hosting with code ${code.toUpperCase()}`);
 		keepBrokerRegistered(peer);
 
+		peer.on("open", () => {
+			hostRegisterRetries = 0;
+		});
+
 		peer.on("connection", (connection) => {
-			// Only accept one connection
-			if (conn) {
-				connection.close();
-				return;
+			// An incoming connection while we already hold one means the
+			// guest's side of the old one is dead (it only redials after
+			// losing it, e.g. its phone was suspended) — adopt the new
+			// connection and drop the stale one instead of rejecting.
+			if (conn && conn !== connection) {
+				pushNetworkDebug("Replacing stale connection with redial");
+				const stale = conn;
+				conn = null;
+				stale.close();
 			}
 			conn = connection;
 			pushNetworkDebug("Incoming connection attempt received");
 
-			conn.on("open", () => {
+			connection.on("open", () => {
 				pushNetworkDebug("Connection open (host)");
 				stopReconnecting();
-				watchConnection(conn!);
+				watchConnection(connection);
 				announceOwnPushSub();
 				// If we have a saved game state, resume it instead of starting fresh
 				const saved = loadGameState();
@@ -528,7 +540,7 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 						lastWinnerIndex: saved.lastWinnerIndex ?? null,
 					});
 					// Compare notes: whoever has seen more moves pushes their state.
-					conn!.send({
+					connection.send({
 						type: "sync-check",
 						moveCount: localMoveCount(),
 					} satisfies PeerMessage);
@@ -543,7 +555,7 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 				});
 			});
 
-			conn.on("data", (raw) => {
+			connection.on("data", (raw) => {
 				lastPeerMessageAt = Date.now();
 				const msg = raw as PeerMessage;
 				if (msg.type === "move") {
@@ -562,19 +574,34 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 				}
 			});
 
-			conn.on("close", handleConnClose);
-			conn.on("error", handleConnClose);
+			// only react to the close of the connection we still consider
+			// current — closes of replaced/stale connections are expected
+			const onGone = () => {
+				if (conn === connection) handleConnClose();
+			};
+			connection.on("close", onGone);
+			connection.on("error", onGone);
 		});
 
 		peer.on("error", (err) => {
 			const msg = (err as Error).message ?? String(err);
 			if (msg.includes("unavailable-id")) {
 				if (existingCode) {
-					// Can't resume with this code — it's taken by someone else
-					set({
-						error: "Could not reconnect with previous code.",
-						lobbyPhase: "hosting",
-					});
+					// Usually OUR OWN not-yet-expired registration (e.g. resuming
+					// after suspension) — the broker drops it once the dead socket
+					// times out, so retry a few times before giving up.
+					if (hostRegisterRetries < 5) {
+						hostRegisterRetries++;
+						pushNetworkDebug(
+							`Host code still registered — retry ${hostRegisterRetries}`,
+						);
+						setTimeout(() => get().hostGame(existingCode), 3000);
+					} else {
+						set({
+							error: "Could not reconnect with previous code.",
+							lobbyPhase: "hosting",
+						});
+					}
 				} else {
 					// Code collision — retry with a new code
 					get().hostGame();
@@ -609,7 +636,10 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 		peer.on("open", () => {
 			console.log("Peer open with ID:", peer!.id);
 			set({ lobbyPhase: "connecting" });
-			conn = peer!.connect(peerIdFromCode(code), { reliable: true });
+			const connection = peer!.connect(peerIdFromCode(code), {
+				reliable: true,
+			});
+			conn = connection;
 
 			const joinTimeout = setTimeout(() => {
 				if (!get().peerConnected && !get().reconnecting) {
@@ -622,14 +652,14 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 				}
 			}, 5000);
 
-			conn.on("open", () => {
+			connection.on("open", () => {
 				clearTimeout(joinTimeout);
 				pushNetworkDebug("Connection open (guest)");
-				watchConnection(conn!);
+				watchConnection(connection);
 				announceOwnPushSub();
 			});
 
-			conn.on("data", (raw) => {
+			connection.on("data", (raw) => {
 				lastPeerMessageAt = Date.now();
 				const msg = raw as PeerMessage;
 				if (msg.type === "game-start" || msg.type === "new-game") {
@@ -677,8 +707,13 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 				}
 			});
 
-			conn.on("close", handleConnClose);
-			conn.on("error", (err) => {
+			// ignore events from superseded connections (a redial replaces
+			// `conn`; the old one's close must not null the new one)
+			connection.on("close", () => {
+				if (conn === connection) handleConnClose();
+			});
+			connection.on("error", (err) => {
+				if (conn !== connection) return;
 				if (!get().reconnecting) {
 					set({
 						error: "Could not connect. Check the code and try again.",
@@ -806,8 +841,17 @@ function rebuildConnection() {
 	pushNetworkDebug(`Rebuilding connection (${isGuest ? "guest" : "host"})`);
 	if (isGuest) {
 		startGuestReconnect(state.gameCode);
+		return;
+	}
+	// Host: drop the zombie conn so the guest's redial is accepted, and
+	// keep our existing broker registration when it's salvageable — a full
+	// re-host would collide with our own not-yet-expired registration.
+	const stale = conn;
+	conn = null;
+	stale?.close();
+	if (peer && !peer.destroyed) {
+		if (peer.disconnected) peer.reconnect();
 	} else {
-		// Re-register under the same code and wait for the guest to redial.
 		state.hostGame(state.gameCode);
 	}
 }
