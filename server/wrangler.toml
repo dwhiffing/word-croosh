@@ -1,4 +1,4 @@
-name = "word-croosh-push"
+name = "word-croosh-api"
 main = "worker.js"
 compatibility_date = "2026-01-01"
 

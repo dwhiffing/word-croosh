@@ -1,29 +1,55 @@
-import Peer, { type DataConnection, type PeerOptions } from "peerjs";
-import { create } from "zustand";
-import { enablePush, initPush, notifyPeer } from "./push";
+// Multiplayer over the game server (Cloudflare Worker + Neon Postgres).
+//
+// The server row holds the authoritative game snapshot; this store is a
+// thin reconciler around it. After every settled local change the snapshot
+// is uploaded (optimistic version check); a poll loop (paused while the tab
+// is hidden) fetches the row and adopts the server state whenever it has
+// seen more moves than we have. That one rule covers opponent moves,
+// reloads, backgrounding, conflicts — everything the old P2P layer needed
+// bespoke machinery for.
 
-const STORAGE_KEY = "word-croosh-mp-state";
+import { create } from "zustand";
+import {
+	apiCreateGame,
+	apiGetGame,
+	apiJoinGame,
+	apiPutPushSub,
+	apiPutState,
+	type GameData,
+	type SavedGameState,
+} from "./api";
+import { enablePush, initPush } from "./push";
+
+export type { SavedGameState } from "./api";
+
 const DEBUG_KEY = "word-croosh-network-debug-visible";
+const LAST_GAME_KEY = "word-croosh-last-game";
+const POLL_MS = 3500;
+
+export type LastGame = { code: string; role: 0 | 1 };
+
+function loadLastGame(): LastGame | null {
+	try {
+		const raw = localStorage.getItem(LAST_GAME_KEY);
+		return raw ? (JSON.parse(raw) as LastGame) : null;
+	} catch {
+		return null;
+	}
+}
+
+function saveLastGame(code: string, role: 0 | 1) {
+	const lastGame: LastGame = { code: code.toUpperCase(), role };
+	localStorage.setItem(LAST_GAME_KEY, JSON.stringify(lastGame));
+	useMultiplayerStore.setState({ lastGame });
+}
+
+function clearLastGame() {
+	localStorage.removeItem(LAST_GAME_KEY);
+	useMultiplayerStore.setState({ lastGame: null });
+}
 
 function getDebugPanelInitialState(): boolean {
 	return localStorage.getItem(DEBUG_KEY) === "1";
-}
-
-function readTurnConfig() {
-	return {
-		turnUsername: import.meta.env.VITE_TURN_USERNAME as string | undefined,
-		turnCredential: import.meta.env.VITE_TURN_CREDENTIAL as string | undefined,
-	};
-}
-
-function getTurnConfigError(): string | null {
-	const { turnUsername, turnCredential } = readTurnConfig();
-	const provided = [turnUsername, turnCredential].filter(Boolean);
-
-	if (provided.length > 0 && provided.length < 2) {
-		return "Partial TURN configuration: set VITE_TURN_USERNAME and VITE_TURN_CREDENTIAL to enable TURN relay.";
-	}
-	return null;
 }
 
 const MAX_DEBUG_LINES = 50;
@@ -32,130 +58,15 @@ let networkDebugSink: ((line: string) => void) | null = null;
 function pushNetworkDebug(line: string) {
 	networkDebugSink?.(`[${new Date().toLocaleTimeString()}] ${line}`);
 }
-type ConnectionType = { candidateType?: string; protocol?: string } | undefined;
-async function logSelectedCandidatePair(pc: RTCPeerConnection): Promise<void> {
-	try {
-		const stats = await pc.getStats();
-		let pair: RTCIceCandidatePairStats | undefined;
-
-		stats.forEach((stat) => {
-			if (stat.type === "transport" && stat.selectedCandidatePairId) {
-				pair = stats.get(stat.selectedCandidatePairId);
-			}
-		});
-
-		if (!pair) {
-			stats.forEach((stat) => {
-				if (stat.type === "candidate-pair" && stat.state === "succeeded") {
-					pair = stat;
-				}
-			});
-		}
-
-		if (!pair || pair.type !== "candidate-pair") {
-			return pushNetworkDebug("ICE selected path not available yet");
-		}
-
-		const local = stats.get(pair.localCandidateId) as ConnectionType;
-		const remote = stats.get(pair.remoteCandidateId) as ConnectionType;
-		const localType = local?.candidateType ?? "unknown";
-		const remoteType = remote?.candidateType ?? "unknown";
-		const protocol = local?.protocol ?? "unknown";
-		const relay = localType === "relay" || remoteType === "relay";
-
-		pushNetworkDebug(
-			`ICE path: ${localType}<->${remoteType} via ${protocol}${relay ? " (TURN)" : " (direct)"}`,
-		);
-	} catch (err) {
-		const msg = (err as Error).message ?? String(err);
-		pushNetworkDebug(`Could not read ICE stats: ${msg}`);
-	}
-}
-
-function buildPeerConfig(): PeerOptions {
-	const iceServers: RTCIceServer[] = [
-		// Public STUN — no cost, handles most NAT traversal
-		{ urls: "stun:stun.l.google.com:19302" },
-		{ urls: "stun:stun1.l.google.com:19302" },
-	];
-
-	// Add TURN whenever configured; ICE will still prefer direct paths when possible
-	const { turnUsername, turnCredential } = readTurnConfig();
-	if (!getTurnConfigError() && turnUsername && turnCredential) {
-		iceServers.push(
-			{
-				urls: "turn:global.relay.metered.ca:80",
-				username: turnUsername,
-				credential: turnCredential,
-			},
-			{
-				urls: "turn:global.relay.metered.ca:80?transport=tcp",
-				username: turnUsername,
-				credential: turnCredential,
-			},
-			{
-				urls: "turn:global.relay.metered.ca:443",
-				username: turnUsername,
-				credential: turnCredential,
-			},
-			{
-				urls: "turns:global.relay.metered.ca:443?transport=tcp",
-				username: turnUsername,
-				credential: turnCredential,
-			},
-		);
-	}
-
-	const opts: PeerOptions = { config: { iceServers } };
-	// Optional self-hosted PeerJS broker (`npx peer --port 9000`), used by
-	// tests and handy when the public cloud is flaky:
-	// VITE_PEERJS_HOST=localhost pnpm dev
-	const brokerHost = import.meta.env.VITE_PEERJS_HOST as string | undefined;
-	if (brokerHost) {
-		opts.host = brokerHost;
-		opts.port = Number(import.meta.env.VITE_PEERJS_PORT ?? 9000);
-		opts.secure = false;
-	}
-	return opts;
-}
 
 export type TilePlacement = { tileId: number; pile: number; letter: string };
 
+// Kept for the game store's sendMove call sites; moves now travel to the
+// opponent as full state snapshots rather than as messages.
 export type MoveData =
 	| { type: "commit"; placements: TilePlacement[] }
 	| { type: "pass" }
 	| { type: "swap"; tileIds: number[] };
-
-export interface SavedGameState {
-	cards: CardType[];
-	currentPlayerIndex: 0 | 1;
-	scores: [number, number];
-	passCount: number;
-	moveCount?: number;
-	gameOver: boolean;
-	lastPlay?: { word: string; score: number; tileIds: number[] } | null;
-	wins?: [number, number];
-	lastWinnerIndex?: 0 | 1 | null;
-}
-
-type PeerMessage =
-	| {
-			type: "game-start" | "new-game";
-			seed: number;
-			wins: [number, number];
-			lastWinnerIndex: 0 | 1 | null;
-	  }
-	| { type: "game-resume"; state: SavedGameState }
-	| { type: "move"; move: MoveData }
-	| { type: "sync-check"; moveCount: number }
-	| { type: "sync-ack" } // sync-check reply when states already match
-	| { type: "push-sub"; subscription: PushSubscriptionJSON }
-	| { type: "leave" };
-
-export function isTurnConfigured(): boolean {
-	const { turnUsername, turnCredential } = readTurnConfig();
-	return !!(turnUsername && turnCredential && !getTurnConfigError());
-}
 
 export type LobbyPhase = "hosting" | "joining" | "connecting";
 
@@ -169,6 +80,7 @@ export interface MultiplayerState {
 	error: string | null;
 	wins: [number, number];
 	lastWinnerIndex: 0 | 1 | null;
+	lastGame: LastGame | null; // most recent game, for the reconnect option
 	notificationsEnabled: boolean;
 	showNetworkDebug: boolean;
 	networkDebugLines: string[];
@@ -180,6 +92,7 @@ interface MultiplayerStore extends MultiplayerState {
 	hostGame: (code?: string) => void;
 	joinGame: (code: string) => void;
 	startNewGame: () => void;
+	reconnectLastGame: () => void;
 	recordResult: (winnerIndex: 0 | 1) => void;
 	sendMove: (move: MoveData) => void;
 	enableNotifications: () => Promise<void>;
@@ -188,21 +101,37 @@ interface MultiplayerStore extends MultiplayerState {
 	checkNetworkPath: () => void;
 }
 
-// Module-level PeerJS instances (not in Zustand to avoid serialization issues)
-let peer: Peer | null = null;
-let conn: DataConnection | null = null;
-
 // Callbacks wired up by gameStore after both stores are created
-let onRemoteMoveCallback: ((move: MoveData) => void) | null = null;
 let onGameStartCallback:
 	| ((seed: number, localPlayerIndex: 0 | 1) => void)
 	| null = null;
 let onGameResumeCallback:
 	| ((state: SavedGameState, localPlayerIndex: 0 | 1) => void)
 	| null = null;
-
 let onDisconnectCallback: (() => void) | null = null;
 let onHostReadyToStartCallback: (() => void) | null = null;
+let onRemoteMoveCallback: ((move: MoveData) => void) | null = null;
+
+export const setOnGameStart = (
+	fn: (seed: number, localPlayerIndex: 0 | 1) => void,
+) => {
+	onGameStartCallback = fn;
+};
+export const setOnGameResume = (
+	fn: (state: SavedGameState, localPlayerIndex: 0 | 1) => void,
+) => {
+	onGameResumeCallback = fn;
+};
+export const setOnDisconnect = (fn: () => void) => {
+	onDisconnectCallback = fn;
+};
+export const setOnHostReadyToStart = (fn: () => void) => {
+	onHostReadyToStartCallback = fn;
+};
+export const setOnRemoteMove = (fn: (move: MoveData) => void) => {
+	onRemoteMoveCallback = fn;
+	void onRemoteMoveCallback; // moves arrive as snapshots now
+};
 
 // Provides a sanitized snapshot of the live game (null when no game is
 // running); wired up by gameStore.
@@ -211,149 +140,187 @@ export const setGameSnapshotProvider = (fn: () => SavedGameState | null) => {
 	gameSnapshotProvider = fn;
 };
 
-// Web Push subscriptions: ours (announced to the peer whenever a connection
-// opens or a sync-check arrives) and the peer's (poked via the relay
-// whenever we make a move). The peer's is persisted so it survives reloads.
-const PEER_PUSH_SUB_KEY = "word-croosh-peer-push-sub";
-let ownPushSub: PushSubscriptionJSON | null = null;
-let peerPushSub: PushSubscriptionJSON | null = loadPeerPushSub();
+// ── Sync engine ─────────────────────────────────────────────────────
+let localPlayerIndex: 0 | 1 = 0;
+let serverVersion = 0;
+let currentSeed: number | null = null; // seed of the game we've started locally
+let lastUploadedCount = -1;
+let uploading = false;
+let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-function loadPeerPushSub(): PushSubscriptionJSON | null {
+function startPolling() {
+	if (pollTimer) return;
+	pollTimer = setInterval(() => void pollTick(), POLL_MS);
+}
+
+function stopPolling() {
+	if (pollTimer) clearInterval(pollTimer);
+	pollTimer = null;
+}
+
+async function pollTick(force = false) {
+	const s = useMultiplayerStore.getState();
+	if (!s.gameCode) return;
+	if (!force && document.visibilityState !== "visible") return;
+	if (uploading) return;
 	try {
-		const raw = localStorage.getItem(PEER_PUSH_SUB_KEY);
-		return raw ? (JSON.parse(raw) as PushSubscriptionJSON) : null;
-	} catch {
-		return null;
+		const data = await apiGetGame(s.gameCode, serverVersion);
+		if (!data) return; // game row is gone (expired)
+		if (s.reconnecting)
+			useMultiplayerStore.setState({ reconnecting: false });
+		if (data.changed === false) {
+			// nothing new server-side; retry a failed upload if we're ahead
+			void uploadState();
+			return;
+		}
+		serverVersion = data.version;
+		reconcile(data);
+	} catch (e) {
+		useMultiplayerStore.setState({ reconnecting: true });
+		pushNetworkDebug(`Poll failed: ${(e as Error).message}`);
 	}
 }
 
-function storePeerPushSub(sub: PushSubscriptionJSON) {
-	peerPushSub = sub;
-	localStorage.setItem(PEER_PUSH_SUB_KEY, JSON.stringify(sub));
-	pushNetworkDebug("Received peer push subscription");
-}
+// Compare the server row with local state and converge on whichever has
+// seen more of the game.
+function reconcile(data: GameData) {
+	const store = useMultiplayerStore;
+	const s = store.getState();
 
-function clearPeerPushSub() {
-	peerPushSub = null;
-	localStorage.removeItem(PEER_PUSH_SUB_KEY);
-}
+	// The server knows which seat this device holds — it beats whatever role
+	// we claimed from the URL or saved state.
+	let seatCorrected = false;
+	if (data.you != null && data.you !== localPlayerIndex) {
+		pushNetworkDebug(`Server corrected our seat to player ${data.you}`);
+		localPlayerIndex = data.you;
+		seatCorrected = true;
+		if (s.gameCode) saveLastGame(s.gameCode, data.you);
+	}
 
-function announceOwnPushSub() {
-	if (ownPushSub && conn?.open) {
-		conn.send({
-			type: "push-sub",
-			subscription: ownPushSub,
-		} satisfies PeerMessage);
-		pushNetworkDebug("Sent our push subscription to peer");
+	// Host waiting in the lobby: the guest just joined — deal a game.
+	if (
+		localPlayerIndex === 0 &&
+		!data.state &&
+		data.guestJoined &&
+		!s.peerConnected
+	) {
+		store.setState({
+			peerConnected: true,
+			reconnecting: false,
+			mode: "multiplayer",
+			showLobbyModal: false,
+		});
+		pushNetworkDebug("Opponent joined — starting game");
+		onHostReadyToStartCallback?.();
+		return;
+	}
+	if (!data.state) return;
+
+	const state = data.state;
+	store.setState({
+		peerConnected: true,
+		reconnecting: false,
+		mode: "multiplayer",
+		showLobbyModal: false,
+		wins: state.wins ?? s.wins,
+		lastWinnerIndex: state.lastWinnerIndex ?? s.lastWinnerIndex,
+	});
+
+	const localCount = gameSnapshotProvider?.()?.moveCount ?? -1;
+	const serverCount = state.moveCount ?? 0;
+
+	// A deal we haven't started locally (initial game or rematch): play the
+	// deal animation from the seed instead of restoring the snapshot.
+	if (
+		data.seed != null &&
+		data.seed !== currentSeed &&
+		serverCount === 0 &&
+		!state.gameOver
+	) {
+		currentSeed = data.seed;
+		lastUploadedCount = 0;
+		pushNetworkDebug("New game from server");
+		onGameStartCallback?.(data.seed, localPlayerIndex);
+		return;
+	}
+
+	if (serverCount > localCount || seatCorrected) {
+		pushNetworkDebug(`Adopting server state (moves ${localCount} → ${serverCount})`);
+		currentSeed = data.seed ?? currentSeed;
+		lastUploadedCount = serverCount;
+		onGameResumeCallback?.(state, localPlayerIndex);
+	} else if (localCount > serverCount) {
+		void uploadState(); // we're ahead — e.g. an earlier upload failed
 	}
 }
 
-// Exported so tests can inject a fake subscription (real ones need a push
-// service and aren't available headlessly).
-export function registerOwnPushSubscription(sub: PushSubscriptionJSON) {
+// Upload the local snapshot when it has advanced past what we've written.
+async function uploadState(force = false) {
+	const s = useMultiplayerStore.getState();
+	const snap = gameSnapshotProvider?.();
+	if (!s.gameCode || !snap || s.mode !== "multiplayer") return;
+	if (!force && (snap.moveCount ?? 0) <= lastUploadedCount) return;
+	if (uploading) return;
+	uploading = true;
+	try {
+		const res = await apiPutState(s.gameCode, {
+			state: {
+				...snap,
+				wins: s.wins,
+				lastWinnerIndex: s.lastWinnerIndex,
+			},
+			seed: currentSeed,
+			version: serverVersion,
+		});
+		serverVersion = res.version;
+		if (res.conflict) {
+			// Someone else wrote first — their row is the truth now.
+			pushNetworkDebug("Write conflict — adopting server state");
+			uploading = false;
+			reconcile(res);
+			return;
+		}
+		lastUploadedCount = snap.moveCount ?? 0;
+		useMultiplayerStore.setState({ reconnecting: false });
+		pushNetworkDebug(`Uploaded move ${lastUploadedCount} (v${serverVersion})`);
+	} catch (e) {
+		// the poll loop notices we're ahead and retries
+		useMultiplayerStore.setState({ reconnecting: true });
+		pushNetworkDebug(`Upload failed: ${(e as Error).message}`);
+	} finally {
+		uploading = false;
+	}
+}
+
+// Called by gameStore's subscriber whenever settled game state changes.
+// The snapshot itself comes from the provider; this is the "state settled,
+// consider uploading" signal.
+export function saveGameState(snapshot: SavedGameState) {
+	void snapshot;
+	void uploadState();
+}
+
+// ── Push subscriptions ──────────────────────────────────────────────
+let ownPushSub: PushSubscriptionJSON | null = null;
+
+function sendPushSubIfAny() {
+	const { gameCode } = useMultiplayerStore.getState();
+	if (gameCode && ownPushSub) {
+		void apiPutPushSub(gameCode, localPlayerIndex, ownPushSub).then(() =>
+			pushNetworkDebug("Push subscription registered with server"),
+		);
+	}
+}
+
+function registerOwnPushSubscription(sub: PushSubscriptionJSON) {
 	ownPushSub = sub;
 	useMultiplayerStore.setState({ notificationsEnabled: true });
-	announceOwnPushSub();
+	sendPushSubIfAny();
 }
 
-const localMoveCount = (): number => {
-	const snap = gameSnapshotProvider?.();
-	// -1 when we have no game at all, so any started game beats us
-	return snap ? (snap.moveCount ?? 0) : -1;
-};
-
-// Compare notes after a (re)connect: whichever peer has seen more moves
-// pushes its full state to the other. Converges in at most two messages.
-// A sync-check is ALWAYS answered (sync-ack when nothing differs), so the
-// sender can treat silence as a dead connection.
-function handleSyncCheck(theirCount: number) {
-	const mine = localMoveCount();
-	pushNetworkDebug(`Sync check: local moves ${mine} vs remote ${theirCount}`);
-	if (!conn?.open) return;
-	if (mine > theirCount) {
-		const snap = gameSnapshotProvider?.();
-		if (!snap) return;
-		conn.send({
-			type: "game-resume",
-			state: { ...snap, wins: useMultiplayerStore.getState().wins },
-		} satisfies PeerMessage);
-	} else if (mine < theirCount) {
-		conn.send({ type: "sync-check", moveCount: mine } satisfies PeerMessage);
-	} else {
-		conn.send({ type: "sync-ack" } satisfies PeerMessage);
-	}
-}
-let intentionalDisconnect = false;
-let remoteLeft = false;
-let reconnectInterval: number | null = null;
-// Timestamp of the last message received from the peer — used to detect
-// zombie connections after the page resumes from suspension.
-let lastPeerMessageAt = 0;
-let resumeCheckTimer: ReturnType<typeof setTimeout> | null = null;
-// Retries for re-registering the host code while the broker still holds our
-// previous (dead) registration; reset once registration succeeds.
-let hostRegisterRetries = 0;
-
-function watchConnection(c: DataConnection) {
-	const pc = c.peerConnection;
-	pushNetworkDebug("Peer connection created");
-	let lastIceState: RTCIceConnectionState | null = null;
-
-	pc.oniceconnectionstatechange = () => {
-		if (pc.iceConnectionState !== lastIceState) {
-			lastIceState = pc.iceConnectionState;
-			pushNetworkDebug(`ICE state: ${pc.iceConnectionState}`);
-		}
-		if (
-			pc.iceConnectionState === "connected" ||
-			pc.iceConnectionState === "completed"
-		) {
-			void logSelectedCandidatePair(pc);
-		}
-		if (
-			pc.iceConnectionState === "disconnected" ||
-			pc.iceConnectionState === "failed"
-		) {
-			handleConnClose();
-		}
-	};
-}
-
-export const setOnRemoteMove = (fn: (move: MoveData) => void) => {
-	onRemoteMoveCallback = fn;
-};
-
-export const setOnGameStart = (
-	fn: (seed: number, localPlayerIndex: 0 | 1) => void,
-) => {
-	onGameStartCallback = fn;
-};
-
-export const setOnHostReadyToStart = (fn: () => void) => {
-	onHostReadyToStartCallback = fn;
-};
-
-export const setOnGameResume = (
-	fn: (state: SavedGameState, localPlayerIndex: 0 | 1) => void,
-) => {
-	onGameResumeCallback = fn;
-};
-
-export const setOnDisconnect = (fn: () => void) => {
-	onDisconnectCallback = fn;
-};
-
-function stopReconnecting() {
-	if (reconnectInterval) {
-		clearInterval(reconnectInterval);
-		reconnectInterval = null;
-	}
-}
-
-// URL param helpers
+// ── URL params (auto-reconnect after reload) ────────────────────────
 function setUrlParam(key: string, value: string) {
 	const url = new URL(window.location.href);
-	// clear both params, only one should be set at a time
 	url.searchParams.delete("host");
 	url.searchParams.delete("join");
 	url.searchParams.set(key, value);
@@ -367,92 +334,7 @@ function clearUrlParams() {
 	history.replaceState(null, "", url.toString());
 }
 
-// localStorage helpers for host game state persistence
-export function saveGameState(state: SavedGameState) {
-	localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
-
-function loadGameState(): SavedGameState | null {
-	const raw = localStorage.getItem(STORAGE_KEY);
-	if (!raw) return null;
-	try {
-		return JSON.parse(raw) as SavedGameState;
-	} catch {
-		return null;
-	}
-}
-
-export function clearGameState() {
-	localStorage.removeItem(STORAGE_KEY);
-}
-
-function generateCode(): string {
-	const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-	return Array.from(
-		{ length: 4 },
-		() => chars[Math.floor(Math.random() * chars.length)],
-	).join("");
-}
-
-function peerIdFromCode(code: string): string {
-	return `ms-${code.toUpperCase()}`;
-}
-
-// Auto-reconnect a peer to the PeerJS broker if its socket drops (e.g. the
-// page was suspended). Bound to the specific instance: `destroy()` also
-// emits 'disconnected', and by then the module-level `peer` may already be
-// a NEW peer that must not be touched. Only peers that once connected are
-// retried, with backoff and a cap — otherwise a failing broker turns this
-// into a hammering loop.
-function keepBrokerRegistered(p: Peer) {
-	let everOpened = false;
-	let attempts = 0;
-	p.on("open", () => {
-		everOpened = true;
-		attempts = 0;
-	});
-	p.on("disconnected", () => {
-		if (peer !== p || p.destroyed || !everOpened || attempts >= 5) return;
-		attempts++;
-		setTimeout(() => {
-			if (peer === p && !p.destroyed && p.disconnected) {
-				pushNetworkDebug(`Broker reconnect attempt ${attempts}`);
-				p.reconnect();
-			}
-		}, 1500 * attempts);
-	});
-}
-
-// Guest re-establishes its peer and redials the host until it succeeds.
-function startGuestReconnect(code: string) {
-	peer?.destroy();
-	peer = null;
-	stopReconnecting();
-	reconnectInterval = setInterval(() => {
-		useMultiplayerStore.getState().joinGame(code);
-	}, 3000);
-	useMultiplayerStore.getState().joinGame(code);
-}
-
-function handleConnClose() {
-	conn = null;
-	if (intentionalDisconnect) return;
-	if (remoteLeft) {
-		remoteLeft = false;
-		useMultiplayerStore.getState().disconnect();
-		return;
-	}
-	const state = useMultiplayerStore.getState();
-	if (state.mode === "multiplayer" && state.gameCode) {
-		useMultiplayerStore.setState({ peerConnected: false, reconnecting: true });
-		const isGuest = new URLSearchParams(window.location.search).has("join");
-		if (isGuest) {
-			pushNetworkDebug("Guest connection lost — reconnecting");
-			startGuestReconnect(state.gameCode);
-		}
-	}
-}
-
+// ── Store ───────────────────────────────────────────────────────────
 export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 	mode: "ai",
 	showLobbyModal: false,
@@ -463,284 +345,114 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 	error: null,
 	wins: [0, 0],
 	lastWinnerIndex: null,
+	lastGame: loadLastGame(),
 	notificationsEnabled: false,
 	showNetworkDebug: getDebugPanelInitialState(),
 	networkDebugLines: [],
-	openLobby: (phase: Exclude<LobbyPhase, "connecting">) =>
-		set({
-			showLobbyModal: true,
-			lobbyPhase: phase,
-			error: getTurnConfigError(),
-		}),
+
+	openLobby: (phase) =>
+		set({ showLobbyModal: true, lobbyPhase: phase, error: null }),
 
 	closeLobby: () => {
 		if (!get().peerConnected) {
-			peer?.destroy();
-			peer = null;
-			conn = null;
+			stopPolling();
+			set({ gameCode: null });
+			clearUrlParams();
 		}
 		set({ showLobbyModal: false });
-		clearUrlParams();
 	},
 
-	hostGame: (existingCode?: string) => {
-		if (peer) {
-			peer.destroy();
-			peer = null;
-		}
-		const code = existingCode || generateCode();
+	hostGame: async (existingCode?: string) => {
+		localPlayerIndex = 0;
 		set({
 			lobbyPhase: "hosting",
-			gameCode: code,
 			error: null,
 			...(existingCode
 				? {}
-				: {
-						wins: [0, 0] as [number, number],
-						lastWinnerIndex: null,
-					}),
+				: { wins: [0, 0] as [number, number], lastWinnerIndex: null }),
 		});
-		setUrlParam("host", code);
-
-		peer = new Peer(peerIdFromCode(code), buildPeerConfig());
-		pushNetworkDebug(`Hosting with code ${code.toUpperCase()}`);
-		keepBrokerRegistered(peer);
-
-		peer.on("open", () => {
-			hostRegisterRetries = 0;
-		});
-
-		peer.on("connection", (connection) => {
-			// An incoming connection while we already hold one means the
-			// guest's side of the old one is dead (it only redials after
-			// losing it, e.g. its phone was suspended) — adopt the new
-			// connection and drop the stale one instead of rejecting.
-			if (conn && conn !== connection) {
-				pushNetworkDebug("Replacing stale connection with redial");
-				const stale = conn;
-				conn = null;
-				stale.close();
+		try {
+			if (existingCode) {
+				// Resume a game we were hosting (e.g. after a reload).
+				const data = await apiGetGame(existingCode, 0);
+				if (data) {
+					serverVersion = data.version;
+					set({ gameCode: existingCode.toUpperCase() });
+					setUrlParam("host", existingCode.toUpperCase());
+					saveLastGame(existingCode, 0);
+					pushNetworkDebug(`Rejoined game ${existingCode.toUpperCase()}`);
+					reconcile(data);
+					startPolling();
+					sendPushSubIfAny();
+					return;
+				}
+				pushNetworkDebug("Previous game expired — creating a new one");
 			}
-			conn = connection;
-			pushNetworkDebug("Incoming connection attempt received");
-
-			connection.on("open", () => {
-				pushNetworkDebug("Connection open (host)");
-				stopReconnecting();
-				watchConnection(connection);
-				announceOwnPushSub();
-				// If we have a saved game state, resume it instead of starting fresh
-				const saved = loadGameState();
-				if (saved && !saved.gameOver) {
-					// Restore from storage only when there's no live game in memory
-					// (page refresh); a mid-game guest reconnect keeps our live state.
-					if (!gameSnapshotProvider?.()) onGameResumeCallback?.(saved, 0);
-					set({
-						wins: saved.wins ?? get().wins,
-						lastWinnerIndex: saved.lastWinnerIndex ?? null,
-					});
-					// Compare notes: whoever has seen more moves pushes their state.
-					connection.send({
-						type: "sync-check",
-						moveCount: localMoveCount(),
-					} satisfies PeerMessage);
-				} else {
-					onHostReadyToStartCallback?.();
-				}
-				set({
-					peerConnected: true,
-					reconnecting: false,
-					mode: "multiplayer",
-					showLobbyModal: false,
-				});
-			});
-
-			connection.on("data", (raw) => {
-				lastPeerMessageAt = Date.now();
-				const msg = raw as PeerMessage;
-				if (msg.type === "move") {
-					onRemoteMoveCallback?.(msg.move);
-				} else if (msg.type === "sync-check") {
-					// a working channel is a good moment to (re)swap push subs
-					announceOwnPushSub();
-					handleSyncCheck(msg.moveCount);
-				} else if (msg.type === "game-resume") {
-					// The guest saw moves we missed — adopt their state.
-					onGameResumeCallback?.(msg.state, 0);
-				} else if (msg.type === "push-sub") {
-					storePeerPushSub(msg.subscription);
-				} else if (msg.type === "leave") {
-					remoteLeft = true;
-				}
-			});
-
-			// only react to the close of the connection we still consider
-			// current — closes of replaced/stale connections are expected
-			const onGone = () => {
-				if (conn === connection) handleConnClose();
-			};
-			connection.on("close", onGone);
-			connection.on("error", onGone);
-		});
-
-		peer.on("error", (err) => {
-			const msg = (err as Error).message ?? String(err);
-			if (msg.includes("unavailable-id")) {
-				if (existingCode) {
-					// Usually OUR OWN not-yet-expired registration (e.g. resuming
-					// after suspension) — the broker drops it once the dead socket
-					// times out, so retry a few times before giving up.
-					if (hostRegisterRetries < 5) {
-						hostRegisterRetries++;
-						pushNetworkDebug(
-							`Host code still registered — retry ${hostRegisterRetries}`,
-						);
-						setTimeout(() => get().hostGame(existingCode), 3000);
-					} else {
-						set({
-							error: "Could not reconnect with previous code.",
-							lobbyPhase: "hosting",
-						});
-					}
-				} else {
-					// Code collision — retry with a new code
-					get().hostGame();
-				}
-			} else if ((err as { type?: string }).type === "network") {
-				// Transient broker-socket loss (e.g. the app was backgrounded).
-				// keepBrokerRegistered reconnects with the same code — don't
-				// flip the lobby to the join phase over it.
-				pushNetworkDebug(`Host broker hiccup (recovering): ${msg}`);
-			} else {
-				set({ error: `Error: ${msg}`, lobbyPhase: "joining" });
-				pushNetworkDebug(`Host peer error: ${msg}`);
-			}
-		});
+			const created = await apiCreateGame();
+			serverVersion = created.version;
+			set({ gameCode: created.code });
+			setUrlParam("host", created.code);
+			saveLastGame(created.code, 0);
+			pushNetworkDebug(`Hosting game ${created.code}`);
+			startPolling();
+			sendPushSubIfAny();
+		} catch (e) {
+			set({ error: "Could not reach the game server. Try again." });
+			pushNetworkDebug(`Host failed: ${(e as Error).message}`);
+		}
 	},
 
-	joinGame: (code: string) => {
-		if (peer) {
-			peer.destroy();
-			peer = null;
-		}
-		const isReconnecting = get().reconnecting;
-		if (!isReconnecting) {
-			set({
-				lobbyPhase: "joining",
-				error: null,
-				wins: [0, 0],
-				lastWinnerIndex: null,
-			});
-		}
-		setUrlParam("join", code.toUpperCase());
-
-		peer = new Peer(buildPeerConfig());
-		pushNetworkDebug(`Joining code ${code.toUpperCase()}`);
-		keepBrokerRegistered(peer);
-
-		peer.on("open", () => {
-			console.log("Peer open with ID:", peer!.id);
-			set({ lobbyPhase: "connecting" });
-			const connection = peer!.connect(peerIdFromCode(code), {
-				reliable: true,
-			});
-			conn = connection;
-
-			const joinTimeout = setTimeout(() => {
-				if (!get().peerConnected && !get().reconnecting) {
-					set({
-						error: "Could not connect. Check the code and try again.",
-						lobbyPhase: "joining",
-					});
-					pushNetworkDebug("Join attempt timed out");
-					handleConnClose();
-				}
-			}, 5000);
-
-			connection.on("open", () => {
-				clearTimeout(joinTimeout);
-				pushNetworkDebug("Connection open (guest)");
-				watchConnection(connection);
-				announceOwnPushSub();
-			});
-
-			connection.on("data", (raw) => {
-				lastPeerMessageAt = Date.now();
-				const msg = raw as PeerMessage;
-				if (msg.type === "game-start" || msg.type === "new-game") {
-					onGameStartCallback?.(msg.seed, 1); // guest is always player 1
-					set({
-						gameCode: code.toUpperCase(),
-						peerConnected: true,
-						mode: "multiplayer",
-						showLobbyModal: false,
-						wins: msg.wins,
-						lastWinnerIndex: msg.lastWinnerIndex,
-					});
-				} else if (msg.type === "game-resume") {
-					stopReconnecting();
-					onGameResumeCallback?.(msg.state, 1); // guest is always player 1
-					set({
-						gameCode: code.toUpperCase(),
-						peerConnected: true,
-						reconnecting: false,
-						mode: "multiplayer",
-						showLobbyModal: false,
-						wins: msg.state.wins ?? get().wins,
-						lastWinnerIndex: msg.state.lastWinnerIndex ?? null,
-					});
-				} else if (msg.type === "move") {
-					onRemoteMoveCallback?.(msg.move);
-				} else if (msg.type === "sync-check") {
-					// The channel demonstrably works — mark ourselves connected even
-					// if no game-resume follows (states may already match).
-					stopReconnecting();
-					set({
-						gameCode: code.toUpperCase(),
-						peerConnected: true,
-						reconnecting: false,
-						mode: "multiplayer",
-						showLobbyModal: false,
-					});
-					// a working channel is a good moment to (re)swap push subs
-					announceOwnPushSub();
-					handleSyncCheck(msg.moveCount);
-				} else if (msg.type === "push-sub") {
-					storePeerPushSub(msg.subscription);
-				} else if (msg.type === "leave") {
-					remoteLeft = true;
-				}
-			});
-
-			// ignore events from superseded connections (a redial replaces
-			// `conn`; the old one's close must not null the new one)
-			connection.on("close", () => {
-				if (conn === connection) handleConnClose();
-			});
-			connection.on("error", (err) => {
-				if (conn !== connection) return;
-				if (!get().reconnecting) {
-					set({
-						error: "Could not connect. Check the code and try again.",
-						lobbyPhase: "joining",
-					});
-					const msg = (err as Error).message ?? String(err);
-					pushNetworkDebug(`Join connection error: ${msg}`);
-				}
-				// During reconnection, don't fully disconnect — the interval will retry
-				if (!get().reconnecting) handleConnClose();
-			});
-		});
-
-		peer.on("error", (err) => {
-			console.log("Peer error:", err);
-			const msg = (err as Error).message ?? String(err);
-			// Suppress errors during reconnection — the interval will retry
-			if (!get().reconnecting) {
-				set({ error: `Error: ${msg}`, lobbyPhase: "joining" });
-				pushNetworkDebug(`Guest peer error: ${msg}`);
+	joinGame: async (code: string) => {
+		localPlayerIndex = 1;
+		set({ lobbyPhase: "connecting", error: null });
+		try {
+			const data = await apiJoinGame(code);
+			if (!data) {
+				if (get().lastGame?.code === code.toUpperCase()) clearLastGame();
+				set({
+					error: "Could not find that game. Check the code.",
+					lobbyPhase: "joining",
+				});
+				return;
 			}
-		});
+			serverVersion = data.version;
+			if (data.you != null) localPlayerIndex = data.you;
+			set({ gameCode: code.toUpperCase(), wins: [0, 0], lastWinnerIndex: null });
+			setUrlParam("join", code.toUpperCase());
+			saveLastGame(code, localPlayerIndex);
+			pushNetworkDebug(`Joined game ${code.toUpperCase()}`);
+			// If the host has dealt, this starts/restores the game; otherwise
+			// we stay in the connecting lobby until the poll sees the deal.
+			reconcile(data);
+			startPolling();
+			sendPushSubIfAny();
+		} catch (e) {
+			set({
+				error: "Could not reach the game server. Try again.",
+				lobbyPhase: "joining",
+			});
+			pushNetworkDebug(`Join failed: ${(e as Error).message}`);
+		}
+	},
+
+	reconnectLastGame: () => {
+		const last = get().lastGame;
+		if (!last) return;
+		if (last.role === 0) {
+			get().openLobby("hosting");
+			get().hostGame(last.code);
+		} else {
+			get().openLobby("joining");
+			get().joinGame(last.code);
+		}
+	},
+
+	startNewGame: () => {
+		const seed = Date.now();
+		currentSeed = seed;
+		lastUploadedCount = -1;
+		onGameStartCallback?.(seed, 0); // host is always player 0
+		void uploadState(true);
 	},
 
 	recordResult: (winnerIndex: 0 | 1) => {
@@ -749,18 +461,14 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 			wins[winnerIndex]++;
 			return { wins, lastWinnerIndex: winnerIndex };
 		});
+		// make sure the final state (with updated wins) reaches the server
+		void uploadState(true);
 	},
 
 	sendMove: (move: MoveData) => {
-		conn?.send({ type: "move", move } satisfies PeerMessage);
-		// it's the opponent's turn now — wake their device if they opted in
-		if (peerPushSub) {
-			void notifyPeer(peerPushSub).then((status) =>
-				pushNetworkDebug(`Push poke: ${status}`),
-			);
-		} else {
-			pushNetworkDebug("Push poke skipped: no peer subscription");
-		}
+		// Moves reach the opponent as state snapshots uploaded from the game
+		// store's subscriber (saveGameState); kept for its call sites.
+		void move;
 	},
 
 	enableNotifications: async () => {
@@ -773,33 +481,14 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 		}
 	},
 
-	startNewGame: () => {
-		clearGameState();
-		const seed = Date.now();
-		const { wins, lastWinnerIndex } = get();
-		conn?.send({
-			type: "new-game",
-			seed,
-			wins,
-			lastWinnerIndex,
-		} satisfies PeerMessage);
-		onGameStartCallback?.(seed, 0); // host is always player 0
-	},
-
 	disconnect: () => {
-		stopReconnecting();
-		intentionalDisconnect = true;
-		// Clear URL params before closing connection so handleConnClose
-		// won't see ?join and start reconnecting
+		stopPolling();
 		clearUrlParams();
-		clearGameState();
-		clearPeerPushSub();
-		conn?.send({ type: "leave" } satisfies PeerMessage);
-		conn?.close();
-		peer?.destroy();
-		conn = null;
-		peer = null;
-		intentionalDisconnect = false;
+		clearLastGame();
+		serverVersion = 0;
+		currentSeed = null;
+		lastUploadedCount = -1;
+		localPlayerIndex = 0;
 		set({
 			mode: "ai",
 			peerConnected: false,
@@ -818,10 +507,19 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 			return { showNetworkDebug: !s.showNetworkDebug };
 		}),
 
-	checkNetworkPath: () => {
-		if (!conn?.peerConnection)
-			return pushNetworkDebug("No active peer connection to inspect");
-		void logSelectedCandidatePair(conn.peerConnection);
+	checkNetworkPath: async () => {
+		const { gameCode } = get();
+		if (!gameCode) return pushNetworkDebug("No active game to check");
+		try {
+			const data = await apiGetGame(gameCode, -1);
+			pushNetworkDebug(
+				data
+					? `Server OK — game v${data.version}, ${data.state?.moveCount ?? 0} moves`
+					: "Server OK — game not found",
+			);
+		} catch (e) {
+			pushNetworkDebug(`Server unreachable: ${(e as Error).message}`);
+		}
 	},
 }));
 
@@ -831,84 +529,22 @@ networkDebugSink = (line) => {
 	}));
 };
 
-// Reuse an existing push subscription without prompting (the user may have
-// enabled notifications in an earlier session).
-void initPush().then((sub) => {
-	if (sub) registerOwnPushSubscription(sub);
-});
-
-// Tear down whatever is left of the connection and re-establish it.
-function rebuildConnection() {
-	const state = useMultiplayerStore.getState();
-	if (state.mode !== "multiplayer" || !state.gameCode) return;
-	useMultiplayerStore.setState({ peerConnected: false, reconnecting: true });
-	const isGuest = new URLSearchParams(window.location.search).has("join");
-	pushNetworkDebug(`Rebuilding connection (${isGuest ? "guest" : "host"})`);
-	if (isGuest) {
-		startGuestReconnect(state.gameCode);
-		return;
-	}
-	// Host: drop the zombie conn so the guest's redial is accepted, and
-	// keep our existing broker registration when it's salvageable — a full
-	// re-host would collide with our own not-yet-expired registration.
-	const stale = conn;
-	conn = null;
-	stale?.close();
-	if (peer && !peer.destroyed) {
-		if (peer.disconnected) peer.reconnect();
-	} else {
-		state.hostGame(state.gameCode);
-	}
-}
-
-// Resync when the app returns to the foreground (phone unlock / app
-// switch): timers and the WebRTC connection may have died while the page
-// was suspended, and moves sent in the meantime may have been missed.
-// Verify the connection and resync state with the peer. Runs on foreground
-// resume and via the manual "Refresh" menu item.
+// Force an immediate server check. Runs on foreground resume and via the
+// manual 🔄 button.
 export function resyncNow() {
-	const state = useMultiplayerStore.getState();
-	if (!state.gameCode) return;
-
-	if (state.mode !== "multiplayer") {
-		// Pre-game hosting lobby: re-register our code with the broker so a
-		// guest can still join after we were backgrounded.
-		if (state.lobbyPhase === "hosting" && !state.peerConnected) {
-			if (!peer || peer.destroyed) state.hostGame(state.gameCode);
-			else if (peer.disconnected) peer.reconnect();
-		}
-		return;
-	}
-
-	if (peer && peer.disconnected && !peer.destroyed) peer.reconnect();
-
-	if (conn?.open) {
-		// The channel *claims* to be alive, but our state may be stale (close
-		// events queue up while the page is suspended). Send a sync check —
-		// it is always answered — and rebuild if nothing comes back.
-		pushNetworkDebug("Resync — sync check sent");
-		const sentAt = Date.now();
-		conn.send({
-			type: "sync-check",
-			moveCount: localMoveCount(),
-		} satisfies PeerMessage);
-		if (resumeCheckTimer) clearTimeout(resumeCheckTimer);
-		resumeCheckTimer = setTimeout(() => {
-			if (document.visibilityState !== "visible") return;
-			if (lastPeerMessageAt >= sentAt) return; // got a reply — it's alive
-			pushNetworkDebug("No reply to sync check — connection is dead");
-			rebuildConnection();
-		}, 3500);
-		return;
-	}
-
-	// The connection is gone — rebuild it.
-	rebuildConnection();
+	pushNetworkDebug("Manual/resume sync");
+	void pollTick(true);
 }
 
 document.addEventListener("visibilitychange", () => {
 	if (document.visibilityState !== "visible") return;
-	resyncNow();
+	void pollTick(true);
+});
+
+// Reuse an existing push subscription without prompting (the user may have
+// enabled notifications in an earlier session).
+void initPush().then((sub) => {
+	if (sub) registerOwnPushSubscription(sub);
 });
 
 // Auto-connect from URL params on page load

@@ -16,7 +16,6 @@ import {
 } from './constants'
 import { isValidWord, loadDictionary } from './dictionary'
 import {
-  clearGameState,
   type MoveData,
   type SavedGameState,
   saveGameState,
@@ -935,12 +934,12 @@ setGameSnapshotProvider(() => {
   return s.cards.length > 0 ? snapshotGameState(s) : null
 })
 
-// Persist state on the host so a refresh / reconnect can resume.
+// Push settled state to the server — each player uploads their own moves
+// (the multiplayer layer only uploads when moveCount has advanced).
 useGameStore.subscribe((state) => {
   const mp = useMultiplayerStore.getState()
-  if (mp.mode !== 'multiplayer' || state.localPlayerIndex !== 0) return
+  if (mp.mode !== 'multiplayer') return
   if (state.dealPhase !== -1) return
-  if (state.gameOver) return clearGameState()
   saveGameState(snapshotGameState(state))
 })
 

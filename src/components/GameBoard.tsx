@@ -21,8 +21,14 @@ import { TwoLetterWordsModal } from "./TwoLetterWordsModal";
 import { UnseenTilesModal } from "./UnseenTilesModal";
 
 function App() {
-	const { showLobbyModal, openLobby, hostGame, peerConnected } =
-		useMultiplayerStore();
+	const {
+		showLobbyModal,
+		openLobby,
+		hostGame,
+		peerConnected,
+		lastGame,
+		reconnectLastGame,
+	} = useMultiplayerStore();
 	const state = useGameStore(
 		useShallow((s) => {
 			const play =
@@ -205,6 +211,14 @@ function App() {
 			{!started && !peerConnected && (
 				<div className="flex flex-col justify-center items-center h-full gap-4 absolute inset-0 text-2xl">
 					<h1 className="text-4xl font-bold mb-4">WordCrꚙsh</h1>
+					{lastGame && (
+						<button
+							className="button font-medium px-4 py-3"
+							onClick={reconnectLastGame}
+						>
+							Reconnect ({lastGame.code})
+						</button>
+					)}
 					<button
 						className="button font-medium px-4 py-3"
 						onClick={() => {
