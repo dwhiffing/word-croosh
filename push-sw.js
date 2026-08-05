@@ -13,8 +13,11 @@ self.addEventListener("push", (event) => {
 			if (wins.some((w) => w.visibilityState === "visible")) return;
 			await self.registration.showNotification("Word Croosh", {
 				body: "It's your turn!",
+				// large icon in the notification body (full colour)
 				icon: "/word-croosh/pwa-192x192.png",
-				badge: "/word-croosh/pwa-192x192.png",
+				// status-bar icon: Android renders this as an alpha-channel
+				// silhouette, so it must be white-on-transparent
+				badge: "/word-croosh/notification-badge.png",
 				tag: "word-croosh-turn", // repeated pushes replace, not stack
 			});
 		})(),
