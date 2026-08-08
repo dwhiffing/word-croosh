@@ -292,7 +292,8 @@ export const useGameStore = create<GameStore>((set, get) => {
           // Tap the selected square again to toggle direction.
           set({ selectedDir: state.selectedDir === 'right' ? 'down' : 'right' })
         } else {
-          set({ selectedSquare: pile, selectedDir: 'right' })
+          // Selecting a different square keeps the current direction.
+          set({ selectedSquare: pile })
         }
       }
       // Clicks elsewhere leave the selection alone; it only clears via
