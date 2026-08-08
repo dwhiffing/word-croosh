@@ -1,4 +1,5 @@
 import debounce from 'lodash/debounce'
+import { useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useForceUpdate, useWindowEvent } from '../utils'
 import {
@@ -36,7 +37,10 @@ function App() {
     reconnectLastGame,
     myName,
     seats,
+    mode,
+    nudge,
   } = useMultiplayerStore()
+  const [nudgeStatus, setNudgeStatus] = useState<string | null>(null)
   const state = useGameStore(
     useShallow((s) => {
       const play =
@@ -172,10 +176,30 @@ function App() {
                         )}
                         {state.pending.length > 0 ? (
                           <button onClick={state.undoLastTile}>Back</button>
+                        ) : myTurn ? (
+                          <button onClick={state.startPass}>
+                            {state.canSwap ? 'Swap' : 'Pass'}
+                          </button>
                         ) : (
-                          myTurn && (
-                            <button onClick={state.startPass}>
-                              {state.canSwap ? 'Swap' : 'Pass'}
+                          mode === 'multiplayer' && (
+                            <button
+                              onClick={() => {
+                                setNudgeStatus('sending')
+                                nudge()
+                                  .then(() => setNudgeStatus('sent'))
+                                  .catch((e: Error) => setNudgeStatus(e.message))
+                                  .finally(() => {
+                                    setTimeout(() => setNudgeStatus(null), 3000)
+                                  })
+                              }}
+                              disabled={nudgeStatus === 'sending'}>
+                              {nudgeStatus === 'sending'
+                                ? 'Nudge'
+                                : nudgeStatus === 'sent'
+                                  ? 'Nudged!'
+                                  : nudgeStatus
+                                    ? nudgeStatus
+                                    : 'Nudge'}
                             </button>
                           )
                         )}

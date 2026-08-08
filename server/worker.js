@@ -47,6 +47,10 @@ async function ensureSchema(sql) {
 		)`
   await sql`ALTER TABLE games ADD COLUMN IF NOT EXISTS max_players INT NOT NULL DEFAULT 2`
   await sql`ALTER TABLE games ADD COLUMN IF NOT EXISTS started BOOLEAN NOT NULL DEFAULT FALSE`
+  // Rate-limits POST /games/:code/nudge — last time ANY player nudged the
+  // current mover, regardless of who sent it (a shared cooldown, not
+  // per-sender, so nobody can be nudged by everyone at once either).
+  await sql`ALTER TABLE games ADD COLUMN IF NOT EXISTS last_nudge_at TIMESTAMPTZ`
 
   // One row per device that has ever played — `id` is the client's
   // persistent device UUID.
@@ -485,17 +489,48 @@ export default {
         })
       }
 
-      // PUT /games/:code/push-sub { playerIndex, subscription }
+      // PUT /games/:code/push-sub { subscription } → registers a push
+      // subscription for the CALLER's own seat, derived from their device
+      // id server-side — a client-supplied playerIndex would let any seat
+      // overwrite any other seat's subscription.
       if (req.method === 'PUT' && parts[2] === 'push-sub') {
-        const { playerIndex, subscription } = await req.json()
-        if (!Number.isInteger(playerIndex) || playerIndex < 0 || playerIndex >= MAX_PLAYERS)
-          return json({ error: 'bad playerIndex' }, 400)
+        const { subscription } = await req.json()
+        const seats = await seatsFor(sql, code)
+        const mySeat = seatOf(seats, dev)
+        if (mySeat == null) return json({ error: 'not seated in this game' }, 403)
         const rows = await sql`
 					UPDATE games
-					SET push_subs = push_subs || ${JSON.stringify({ [playerIndex]: subscription })}::jsonb,
+					SET push_subs = push_subs || ${JSON.stringify({ [mySeat]: subscription })}::jsonb,
 						updated_at = now()
 					WHERE code = ${code} RETURNING code`
         if (!rows.length) return json({ error: 'no such game' }, 404)
+        return json({ ok: true })
+      }
+
+      // POST /games/:code/nudge → re-sends the "your turn" push to whoever
+      // is currently the active player. Any OTHER seated player can call
+      // this; rate-limited to once every 60s per game (shared across all
+      // callers) so it can't be used to spam the current mover.
+      if (req.method === 'POST' && parts[2] === 'nudge') {
+        const gameRows = await sql`
+					SELECT state, push_subs, last_nudge_at FROM games WHERE code = ${code}`
+        if (!gameRows.length) return json({ error: 'no such game' }, 404)
+        const g = gameRows[0]
+        const seats = await seatsFor(sql, code)
+        const mySeat = seatOf(seats, dev)
+        if (mySeat == null) return json({ error: 'not seated in this game' }, 403)
+        const state = g.state
+        if (!state || state.gameOver)
+          return json({ error: 'no game in progress' }, 409)
+        const target = state.currentPlayerIndex
+        if (target === mySeat)
+          return json({ error: "it's your turn — nothing to nudge" }, 400)
+        if (g.last_nudge_at && Date.now() - new Date(g.last_nudge_at).getTime() < 60_000)
+          return json({ error: 'already nudged recently — try again in a bit' }, 429)
+        const sub = (g.push_subs ?? {})[target]
+        if (!sub) return json({ error: 'that player has no notifications enabled' }, 409)
+        await sql`UPDATE games SET last_nudge_at = now() WHERE code = ${code}`
+        ctx.waitUntil(sendPush(sub, env))
         return json({ ok: true })
       }
 

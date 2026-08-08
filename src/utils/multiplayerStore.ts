@@ -15,6 +15,7 @@ import {
   apiGetResults,
   apiJoinGame,
   apiLoginPlayer,
+  apiNudge,
   apiPutPushSub,
   apiPutState,
   apiSetPlayer,
@@ -61,6 +62,10 @@ interface MultiplayerStore {
   startNewGame: () => void // host-only: deal a rematch with the same seats
   reconnectLastGame: () => void
   enableNotifications: () => Promise<void>
+  // Re-sends the "your turn" push to whoever's turn it currently is.
+  // Throws (with a server error message) if it's your own turn, the
+  // target has no push subscription, or it was already nudged recently.
+  nudge: () => Promise<void>
   disconnect: () => void
   openNameModal: () => void
   closeNameModal: () => void
@@ -307,7 +312,7 @@ let ownPushSub: PushSubscriptionJSON | null = null
 function sendPushSubIfAny() {
   const { gameCode } = useMultiplayerStore.getState()
   if (gameCode && ownPushSub) {
-    void apiPutPushSub(gameCode, localPlayerIndex, ownPushSub).then(() =>
+    void apiPutPushSub(gameCode, ownPushSub).then(() =>
       pushNetworkDebug('Push subscription registered with server'),
     )
   }
@@ -481,6 +486,13 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
     } else {
       pushNetworkDebug(`Push enable failed: ${result.reason}`)
     }
+  },
+
+  nudge: async () => {
+    const { gameCode } = get()
+    if (!gameCode) return
+    await apiNudge(gameCode)
+    pushNetworkDebug('Nudged the current player')
   },
 
   disconnect: () => {

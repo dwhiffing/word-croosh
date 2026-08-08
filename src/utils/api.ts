@@ -161,13 +161,23 @@ export async function apiPutState(
 
 export async function apiPutPushSub(
   code: string,
-  playerIndex: number,
   subscription: PushSubscriptionJSON,
 ): Promise<void> {
   await request(`/games/${code}/push-sub`, {
     method: 'PUT',
-    body: JSON.stringify({ playerIndex, subscription }),
+    body: JSON.stringify({ subscription }),
   })
+}
+
+// Re-send the "your turn" push to whoever the game says is currently up —
+// rate-limited server-side (see server/worker.js), so a 429 here just means
+// someone already nudged them recently.
+export async function apiNudge(code: string): Promise<void> {
+  const { status, data } = await request(`/games/${code}/nudge`, {
+    method: 'POST',
+  })
+  if (status !== 200)
+    throw new Error((data as { error?: string }).error ?? `HTTP ${status}`)
 }
 
 // The win/loss tally (and recent history) of finished games under this code.
