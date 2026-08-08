@@ -135,28 +135,29 @@ function App() {
 												<button onClick={state.giveUp}>Give Up</button>
 											</>
 										)}
-										{myTurn && !state.swapMode && (
+										{!state.swapMode && (
 											<>
-												<button
-													onClick={state.submitTurn}
-													disabled={!state.canSubmit}
-												>
-													Submit
-													{state.pendingScore != null &&
-														` (${state.pendingScore})`}
-												</button>
-												<button
-													onClick={state.recallTiles}
-													disabled={state.pending.length === 0}
-												>
-													Recall
-												</button>
+												{state.pending.length > 0 && (
+													<button
+														onClick={state.submitTurn}
+														disabled={!myTurn || !state.canSubmit}
+													>
+														Submit
+														{state.pendingScore != null &&
+															` (${state.pendingScore})`}
+													</button>
+												)}
+												{state.pending.length > 0 && (
+													<button onClick={state.recallTiles}>Recall</button>
+												)}
 												{state.pending.length > 0 ? (
 													<button onClick={state.undoLastTile}>Back</button>
 												) : (
-													<button onClick={state.startPass}>
-														{state.canSwap ? "Swap" : "Pass"}
-													</button>
+													myTurn && (
+														<button onClick={state.startPass}>
+															{state.canSwap ? "Swap" : "Pass"}
+														</button>
+													)
 												)}
 											</>
 										)}

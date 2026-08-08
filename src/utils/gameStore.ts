@@ -205,14 +205,15 @@ export const useGameStore = create<GameStore>((set, get) => {
       startGame(seed, localPlayerIndex),
     restoreMultiplayerGame: (saved, localPlayerIndex) => {
       if (dealTimeout) clearTimeout(dealTimeout)
+      const before = get()
       // Rack ordering is local presentation, not shared truth — a snapshot
       // from the opponent carries a stale copy of our rack order, so keep
       // the slots we have now for any tile that's in our rack both locally
       // and in the snapshot (newly drawn tiles sort after, in saved order).
       const rackPile = RACK_PILE[localPlayerIndex]
       const localSlot = new Map(
-        get()
-          .cards.filter((c) => c.pileIndex === rackPile)
+        before.cards
+          .filter((c) => c.pileIndex === rackPile)
           .map((c) => [c.id, c.cardPileIndex]),
       )
       const rackOrder = saved.cards
@@ -223,13 +224,46 @@ export const useGameStore = create<GameStore>((set, get) => {
               (localSlot.get(b.id) ?? Infinity) ||
             a.cardPileIndex - b.cardPileIndex,
         )
-      const cards = saved.cards.map((c) => {
+      let cards = saved.cards.map((c) => {
         const idx = rackOrder.findIndex((t) => t.id === c.id)
         return idx === -1 ? c : { ...c, cardPileIndex: idx }
       })
+
+      // Planning ahead: tiles we've placed but not submitted are purely
+      // local (the snapshot always has them back in our rack). Carry them
+      // forward onto the incoming board — unless the opponent's move just
+      // took that square, in which case that one tile gets bumped back to
+      // our rack instead of silently vanishing.
+      let pending: number[] = []
+      for (const id of before.pending) {
+        const local = before.cards[id]
+        const nowOccupied = cards.some(
+          (c) => c.id !== id && c.pileIndex === local.pileIndex,
+        )
+        if (nowOccupied) {
+          cards = returnTileToRack(cards, id, localPlayerIndex)
+        } else {
+          cards = cards.map((c) =>
+            c.id === id
+              ? { ...c, pileIndex: local.pileIndex, letter: local.letter }
+              : c,
+          )
+          pending.push(id)
+        }
+      }
+      // A selection whose square got taken by the opponent no longer makes
+      // sense — drop it so the player picks a fresh spot.
+      const selectionTaken =
+        before.selectedSquare != null &&
+        cards.some((c) => c.pileIndex === before.selectedSquare)
+      const selectedSquare = selectionTaken ? null : before.selectedSquare
+
       set({
         ...initializeGameState(),
         cards,
+        pending,
+        selectedSquare,
+        selectedDir: before.selectedDir,
         localPlayerIndex,
         dealPhase: -1,
         currentPlayerIndex: saved.currentPlayerIndex,
@@ -262,7 +296,6 @@ export const useGameStore = create<GameStore>((set, get) => {
     onMouseDown: ({ clientX, clientY }: MouseParams) => {
       const state = get()
       const us = state.localPlayerIndex
-      const myTurn = state.currentPlayerIndex === us && !state.gameOver
       if (state.gameOver) return
 
       const clicked = getCardFromPoint(clientX, clientY, state.cards)
@@ -285,7 +318,9 @@ export const useGameStore = create<GameStore>((set, get) => {
         return
       }
 
-      if (!myTurn) return
+      // Selecting a square and placing tiles is allowed on either turn, so
+      // a player can plan their next word while waiting. Submitting still
+      // requires it actually being their turn (see submitTurn).
       const pile = getPileAtPoint(clientX, clientY)
       if (isSquarePile(pile) && !tileOnSquare(pile, state.cards)) {
         if (state.selectedSquare === pile) {
@@ -412,7 +447,7 @@ export const useGameStore = create<GameStore>((set, get) => {
     undoLastTile: () => {
       const state = get()
       const us = state.localPlayerIndex
-      if (state.currentPlayerIndex !== us || state.gameOver) return
+      if (state.gameOver) return
       const lastId = state.pending[state.pending.length - 1]
       if (lastId == null) return
       const square = state.cards[lastId].pileIndex
