@@ -41,8 +41,10 @@
        (see main.tsx) — dvh/vh are unreliable on mobile browsers. */
     --app-height: 100dvh;
 
-    /* A tile/square is 1/16 of the smaller viewport dimension (15 cols + margin). */
-    --base-size: min(6.2vw, calc((var(--app-height) - 250px) / 15), 44px);
+    /* A tile/square is 1/16 of the smaller viewport dimension (15 cols + margin).
+       44px cap gives a 660px board on desktop; reduced to 37.33px (~560px) to
+       shrink the max board width by 100px. */
+    --base-size: min(6.2vw, calc((var(--app-height) - 250px) / 15), 37.33px);
   }
 
   html,
