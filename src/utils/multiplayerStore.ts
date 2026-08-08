@@ -7,18 +7,20 @@
 // seen more moves than we have.
 
 import { create } from 'zustand'
+import { clearUrlParams, setUrlParam } from '.'
 import {
   apiCreateGame,
   apiGetGame,
+  apiGetResults,
   apiJoinGame,
   apiPutPushSub,
   apiPutState,
   type GameData,
+  type GameResults,
   type SavedGameState,
 } from './api'
 import { pushNetworkDebug } from './networkDebug'
 import { clearTurnNotifications, enablePush, initPush } from './push'
-import { clearUrlParams, setUrlParam } from '.'
 
 export type { SavedGameState } from './api'
 
@@ -32,8 +34,7 @@ interface MultiplayerStore {
   peerConnected: boolean
   reconnecting: boolean
   error: string | null
-  wins: [number, number]
-  lastWinnerIndex: 0 | 1 | null
+  results: GameResults | null // win tally + history for this code, from the DB
   lastGame: LastGame | null // most recent game, for the reconnect option
   notificationsEnabled: boolean
   openLobby: (phase: Exclude<LobbyPhase, 'connecting'>) => void
@@ -42,7 +43,6 @@ interface MultiplayerStore {
   joinGame: (code: string) => void
   startNewGame: () => void
   reconnectLastGame: () => void
-  recordResult: (winnerIndex: 0 | 1) => void
   enableNotifications: () => Promise<void>
   disconnect: () => void
 }
@@ -70,7 +70,7 @@ let lastUploadedCount = -1
 let uploading = false
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-const POLL_MS = 10000
+const POLL_MS = 3500
 function startPolling() {
   if (pollTimer) return
   pollTimer = setInterval(() => void pollTick(), POLL_MS)
@@ -147,9 +147,8 @@ function reconcile(data: GameData, forceAdopt = false) {
     reconnecting: false,
     mode: 'multiplayer',
     showLobbyModal: false,
-    wins: state.wins ?? s.wins,
-    lastWinnerIndex: state.lastWinnerIndex ?? s.lastWinnerIndex,
   })
+  if (state.gameOver && s.gameCode) void fetchResults(s.gameCode)
 
   const localCount = gameHooks?.gameSnapshot()?.moveCount ?? -1
   const serverCount = state.moveCount ?? 0
@@ -191,11 +190,7 @@ async function uploadState(force = false) {
   uploading = true
   try {
     const res = await apiPutState(s.gameCode, {
-      state: {
-        ...snap,
-        wins: s.wins,
-        lastWinnerIndex: s.lastWinnerIndex,
-      },
+      state: snap,
       seed: currentSeed,
       version: serverVersion,
     })
@@ -211,12 +206,32 @@ async function uploadState(force = false) {
     lastUploadedCount = snap.moveCount ?? 0
     useMultiplayerStore.setState({ reconnecting: false })
     pushNetworkDebug(`Uploaded move ${lastUploadedCount} (v${serverVersion})`)
+    // The server recorded the result the instant it saw gameOver — pull the
+    // updated tally now rather than waiting for the next poll.
+    if (snap.gameOver) void fetchResults(s.gameCode)
   } catch (e) {
     // the poll loop notices we're ahead and retries
     useMultiplayerStore.setState({ reconnecting: true })
     pushNetworkDebug(`Upload failed: ${(e as Error).message}`)
   } finally {
     uploading = false
+  }
+}
+
+// The server inserts the finished-game row via ctx.waitUntil after already
+// responding to the move that ended the game, so the very next fetch can
+// briefly race it. One short retry covers that window without delaying the
+// normal case (a fetch triggered by a later poll already sees it).
+async function fetchResults(code: string, retriesLeft = 1) {
+  try {
+    const results = await apiGetResults(code)
+    const prevCount = useMultiplayerStore.getState().results?.games.length ?? 0
+    useMultiplayerStore.setState({ results })
+    if (results.games.length === prevCount && retriesLeft > 0) {
+      setTimeout(() => void fetchResults(code, retriesLeft - 1), 1500)
+    }
+  } catch (e) {
+    pushNetworkDebug(`Results fetch failed: ${(e as Error).message}`)
   }
 }
 
@@ -255,8 +270,7 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
   peerConnected: false,
   reconnecting: false,
   error: null,
-  wins: [0, 0],
-  lastWinnerIndex: null,
+  results: null,
   lastGame: loadLastGame(),
   notificationsEnabled: false,
 
@@ -274,13 +288,7 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 
   hostGame: async (existingCode?: string) => {
     localPlayerIndex = 0
-    set({
-      lobbyPhase: 'hosting',
-      error: null,
-      ...(existingCode
-        ? {}
-        : { wins: [0, 0] as [number, number], lastWinnerIndex: null }),
-    })
+    set({ lobbyPhase: 'hosting', error: null, results: null })
     try {
       if (existingCode) {
         // Resume a game we were hosting (e.g. after a reload).
@@ -291,6 +299,7 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
           setUrlParam('host', existingCode.toUpperCase())
           saveLastGame(existingCode, 0)
           pushNetworkDebug(`Rejoined game ${existingCode.toUpperCase()}`)
+          void fetchResults(existingCode.toUpperCase())
           reconcile(data)
           startPolling()
           sendPushSubIfAny()
@@ -314,7 +323,7 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 
   joinGame: async (code: string) => {
     localPlayerIndex = 1
-    set({ lobbyPhase: 'connecting', error: null })
+    set({ lobbyPhase: 'connecting', error: null, results: null })
     try {
       const data = await apiJoinGame(code)
       if (!data) {
@@ -324,14 +333,11 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
       }
       serverVersion = data.version
       if (data.you != null) localPlayerIndex = data.you
-      set({
-        gameCode: code.toUpperCase(),
-        wins: [0, 0],
-        lastWinnerIndex: null,
-      })
+      set({ gameCode: code.toUpperCase() })
       setUrlParam('join', code.toUpperCase())
       saveLastGame(code, localPlayerIndex)
       pushNetworkDebug(`Joined game ${code.toUpperCase()}`)
+      void fetchResults(code.toUpperCase())
       // If the host has dealt, this starts/restores the game; otherwise
       // we stay in the connecting lobby until the poll sees the deal.
       reconcile(data)
@@ -366,16 +372,6 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
     void uploadState(true)
   },
 
-  recordResult: (winnerIndex: 0 | 1) => {
-    set((s) => {
-      const wins: [number, number] = [...s.wins]
-      wins[winnerIndex]++
-      return { wins, lastWinnerIndex: winnerIndex }
-    })
-    // make sure the final state (with updated wins) reaches the server
-    void uploadState(true)
-  },
-
   enableNotifications: async () => {
     const result = await enablePush()
     if (result.ok) {
@@ -400,8 +396,7 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
       reconnecting: false,
       gameCode: null,
       lobbyPhase: 'joining' as LobbyPhase,
-      wins: [0, 0],
-      lastWinnerIndex: null,
+      results: null,
     })
     gameHooks?.onDisconnect()
   },

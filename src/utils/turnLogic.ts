@@ -184,7 +184,6 @@ export function endTurn(
   set: Set,
 ) {
   const state = get()
-  const passCount = wasPass ? state.passCount + 1 : 0
 
   // Game ends: two consecutive passes, or the mover emptied their rack with
   // an empty bag. If the other player has given up, the mover is playing
@@ -193,15 +192,16 @@ export function endTurn(
   const moverRackEmpty =
     tilesInPile(RACK_PILE[playerIndex], state.cards).length === 0
   const opponentGaveUp = state.givenUpBy === otherPlayer(playerIndex)
-  const gameOver =
-    passCount >= 4 ||
-    (bagEmpty && moverRackEmpty) ||
-    (opponentGaveUp && wasPass)
+  const gameOver = (bagEmpty && moverRackEmpty) || (opponentGaveUp && wasPass)
 
   // Once someone has given up, the turn never returns to them — the
   // remaining player just keeps going.
   const nextPlayer = opponentGaveUp ? playerIndex : otherPlayer(playerIndex)
 
+  // `scores` here is intentionally left as "points from played words only" —
+  // the server subtracts each player's leftover rack when it records the
+  // result (see server/worker.js), so this stays the single source of
+  // truth regardless of which client's upload wins any race at game end.
   set({
     currentPlayerIndex: nextPlayer,
     pending: [],
@@ -210,11 +210,9 @@ export function endTurn(
     selectedDir: 'right',
     swapMode: false,
     swapIds: [],
-    passCount,
     moveCount: state.moveCount + 1,
     gameOver,
   })
-  if (gameOver) finalizeScores(get, set)
   const { localPlayerIndex } = get()
   if (
     !gameOver &&
@@ -224,23 +222,4 @@ export function endTurn(
   ) {
     navigator.vibrate?.(60)
   }
-}
-
-// Subtract each player's leftover rack tiles from their score. Any tiles
-// the local player had placed for planning but never submitted are still
-// unplayed, not scored — count them as leftover too, even though they've
-// already left the rack pile.
-export function finalizeScores(get: Get, set: Set) {
-  const { cards, pending, localPlayerIndex } = get()
-  const scores: [number, number] = [...get().scores]
-  const pendingValue = pending.reduce((sum, id) => sum + cards[id].value, 0)
-  for (const p of [0, 1] as const) {
-    const leftover =
-      tilesInPile(RACK_PILE[p], cards).reduce((sum, t) => sum + t.value, 0) +
-      (p === localPlayerIndex ? pendingValue : 0)
-    scores[p] -= leftover
-  }
-  set({ scores })
-  const { recordResult } = useMultiplayerStore.getState()
-  if (scores[0] !== scores[1]) recordResult(scores[0] > scores[1] ? 0 : 1)
 }

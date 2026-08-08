@@ -13,6 +13,7 @@ import { Header } from './Header'
 import { MenuDropdown } from './MenuDropdown'
 import { BlankTileModal } from './modals/BlankTileModal'
 import { GameOverModal } from './modals/GameOverModal'
+import { HistoryModal } from './modals/HistoryModal'
 import { InstructionsModal } from './modals/InstructionsModal'
 import { LobbyModal } from './modals/LobbyModal'
 import { TwoLetterWordsModal } from './modals/TwoLetterWordsModal'
@@ -226,6 +227,7 @@ function App() {
       <UnseenTilesModal />
       <GameOverModal />
       <LobbyModal key={showLobbyModal ? 'show' : 'hide'} />
+      <HistoryModal />
       <NetworkDebugPanel />
     </div>
   )

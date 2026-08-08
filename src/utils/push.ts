@@ -2,7 +2,6 @@
 // (see server/worker.js), which sends a payload-less "your turn" push after
 // each accepted move.
 
-
 // Public half of the VAPID keypair (private half is a secret on the server).
 const VAPID_PUBLIC_KEY =
   'BPZ_aq1kjkZwAwoawr3prwDupxjy9GPnD4cZBXQ2xKPssNNVHF6L-Y1YL-IBAHRZxMpII55i31OkJgiJqEoTUlg'

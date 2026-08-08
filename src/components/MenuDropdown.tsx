@@ -16,6 +16,7 @@ export function MenuDropdown({
 }) {
   const openTwoLetterWords = useGameStore((s) => s.openTwoLetterWords)
   const openUnseenTiles = useGameStore((s) => s.openUnseenTiles)
+  const openHistory = useGameStore((s) => s.openHistory)
   const gameActive = useGameStore((s) => s.cards.length > 0)
   const {
     mode,
@@ -46,6 +47,10 @@ export function MenuDropdown({
               },
             ]
           : []),
+        {
+          label: 'My Games',
+          onClick: () => openHistory(),
+        },
         ...(pushSupported() && !notificationsEnabled
           ? [
               {

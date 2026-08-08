@@ -4,27 +4,34 @@ import { useMultiplayerStore } from '../../utils/multiplayerStore'
 import { Modal } from './Modal'
 
 export const GameOverModal = () => {
-  const { gameOver, scores, newGame, localPlayerIndex } = useGameStore(
+  const { gameOver, newGame, localPlayerIndex } = useGameStore(
     useShallow((state) => ({
       gameOver: state.gameOver,
-      scores: state.scores,
       newGame: state.newGame,
       localPlayerIndex: state.localPlayerIndex,
     })),
   )
-  const { mode, wins, disconnect } = useMultiplayerStore(
+  const { mode, results, disconnect } = useMultiplayerStore(
     useShallow((s) => ({
       mode: s.mode,
-      wins: s.wins,
+      results: s.results,
       disconnect: s.disconnect,
     })),
   )
+  const wins = results?.wins ?? [0, 0]
   const isGuest = mode === 'multiplayer' && localPlayerIndex === 1
 
   const myIndex = localPlayerIndex
   const opponentIndex: 0 | 1 = myIndex === 0 ? 1 : 0
-  const myScore = scores[myIndex]
-  const opponentScore = scores[opponentIndex]
+  // The server is the sole authority on the final score (it applies the
+  // leftover-rack deduction) — read the most recently finished game for
+  // this code rather than trusting the client's own in-memory scores.
+  const latest = results?.games[0]
+  const hostGuestScore: [number, number] = latest
+    ? [latest.hostScore, latest.guestScore]
+    : [0, 0]
+  const myScore = hostGuestScore[myIndex]
+  const opponentScore = hostGuestScore[opponentIndex]
   const winner =
     myScore > opponentScore
       ? 'You win!'

@@ -24,7 +24,6 @@ import {
   commitPlacements,
   endTurn,
   exchangeTiles,
-  finalizeScores,
   otherPlayer,
   placeOnSelected,
   playSelectedTile,
@@ -52,13 +51,13 @@ export interface GameState {
   swapMode: boolean // passing: picking rack tiles to exchange with the bag
   swapIds: number[] // rack tiles marked for exchange
   blankPick: number | null // blank tile awaiting a letter choice (modal open)
-  passCount: number // consecutive passes; 2 ends the game
   moveCount: number // total turns taken; used to resync after reconnects
   gameOver: boolean
   givenUpBy: 0 | 1 | null // if set, that player is done — the other plays on solo
   showInstructionsModal: boolean
   showTwoLetterModal: boolean
   showUnseenModal: boolean
+  showHistoryModal: boolean
 }
 
 export interface GameStore extends GameState {
@@ -88,6 +87,8 @@ export interface GameStore extends GameState {
   cancelBlankPick: () => void
   openUnseenTiles: () => void
   closeUnseenTiles: () => void
+  openHistory: () => void
+  closeHistory: () => void
 }
 
 let cursorDownAt = 0
@@ -163,7 +164,6 @@ export const useGameStore = create<GameStore>((set, get) => {
         localPlayerIndex,
         currentPlayerIndex: saved.currentPlayerIndex,
         scores: saved.scores,
-        passCount: saved.passCount,
         moveCount: saved.moveCount ?? 0,
         gameOver: saved.gameOver,
         lastPlay: saved.lastPlay ?? null,
@@ -207,16 +207,12 @@ export const useGameStore = create<GameStore>((set, get) => {
       if (isSquarePile(pile) && !tileOnSquare(pile, state.cards)) {
         if (state.selectedSquare === pile) {
           // Tap the selected square again to toggle direction.
-          set({
-            selectedDir: state.selectedDir === 'right' ? 'down' : 'right',
-          })
+          set({ selectedDir: state.selectedDir === 'right' ? 'down' : 'right' })
         } else {
           // Selecting a different square keeps the current direction.
           set({ selectedSquare: pile })
         }
       }
-      // Clicks elsewhere leave the selection alone; it only clears via
-      // recall, backing out every tile, or the turn ending.
     },
 
     onMouseUp: ({ clientX, clientY }: MouseParams) => {
@@ -370,8 +366,6 @@ export const useGameStore = create<GameStore>((set, get) => {
       endTurn(us, false, get, set)
     },
 
-    cancelSwap: () => set({ swapMode: false, swapIds: [] }),
-
     // Bow out. The other player keeps taking turns on their own — no more
     // passing the turn back to us — until they empty their rack (with an
     // empty bag), pass, or give up too.
@@ -384,6 +378,8 @@ export const useGameStore = create<GameStore>((set, get) => {
       const ourTurn = state.currentPlayerIndex === us
       // Withdraw fully: any tiles placed for planning (turn or not) go back
       // to the rack, so nothing is left stranded on the board.
+      // Leftover-rack deduction happens server-side when it records the
+      // result (see server/worker.js) — scores here stay word-points-only.
       set({
         cards: recallPendingToRack(state.cards, state.pending, us),
         givenUpBy: us,
@@ -394,13 +390,7 @@ export const useGameStore = create<GameStore>((set, get) => {
         pending: [],
         ...(ourTurn && { swapMode: false, swapIds: [] }),
       })
-      if (opponentAlreadyGaveUp) finalizeScores(get, set)
     },
-
-    openInstructions: () => set({ showInstructionsModal: true }),
-    closeInstructions: () => set({ showInstructionsModal: false }),
-    openTwoLetterWords: () => set({ showTwoLetterModal: true }),
-    closeTwoLetterWords: () => set({ showTwoLetterModal: false }),
 
     // Complete a blank-tile placement with the letter picked in the modal.
     chooseBlankLetter: (letter: string) => {
@@ -413,9 +403,18 @@ export const useGameStore = create<GameStore>((set, get) => {
       if (card.pileIndex !== RACK_PILE[state.localPlayerIndex]) return
       placeOnSelected(card, letter, get, set)
     },
+
+    cancelSwap: () => set({ swapMode: false, swapIds: [] }),
+
     cancelBlankPick: () => set({ blankPick: null }),
     openUnseenTiles: () => set({ showUnseenModal: true }),
     closeUnseenTiles: () => set({ showUnseenModal: false }),
+    openInstructions: () => set({ showInstructionsModal: true }),
+    closeInstructions: () => set({ showInstructionsModal: false }),
+    openTwoLetterWords: () => set({ showTwoLetterModal: true }),
+    closeTwoLetterWords: () => set({ showTwoLetterModal: false }),
+    openHistory: () => set({ showHistoryModal: true }),
+    closeHistory: () => set({ showHistoryModal: false }),
   }
 })
 
@@ -433,13 +432,13 @@ function initializeGameState(): Omit<GameState, 'cards'> {
     localPlayerIndex: 0,
     scores: [0, 0],
     pending: [],
-    passCount: 0,
     moveCount: 0,
     gameOver: false,
     givenUpBy: null,
     showInstructionsModal: false,
     showTwoLetterModal: false,
     showUnseenModal: false,
+    showHistoryModal: false,
   }
 }
 
@@ -457,7 +456,6 @@ function snapshotGameState(state: GameState): SavedGameState {
     cards,
     currentPlayerIndex: state.currentPlayerIndex,
     scores: state.scores,
-    passCount: state.passCount,
     moveCount: state.moveCount,
     gameOver: state.gameOver,
     lastPlay: state.lastPlay,

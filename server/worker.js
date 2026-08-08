@@ -41,7 +41,59 @@ async function ensureSchema(sql) {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`
+  // One row per device that has ever played — `id` is the client's
+  // persistent device UUID (the same one already used as host_id/guest_id).
+  await sql`
+		CREATE TABLE IF NOT EXISTS players (
+			id TEXT PRIMARY KEY,
+			first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`
+  // One row per finished game (a rematch under the same code gets its own
+  // row here, unlike `games` which is overwritten in place). Stores the
+  // full final board so a player can reopen exactly what the game looked
+  // like when it ended.
+  await sql`
+		CREATE TABLE IF NOT EXISTS game_results (
+			id SERIAL PRIMARY KEY,
+			code TEXT NOT NULL,
+			seed DOUBLE PRECISION,
+			host_id TEXT,
+			guest_id TEXT,
+			host_score INT NOT NULL,
+			guest_score INT NOT NULL,
+			winner_seat INT, -- 0 host, 1 guest, NULL = tie
+			final_state JSONB,
+			finished_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`
+  await sql`CREATE INDEX IF NOT EXISTS game_results_code_idx ON game_results (code)`
+  await sql`CREATE INDEX IF NOT EXISTS game_results_host_idx ON game_results (host_id)`
+  await sql`CREATE INDEX IF NOT EXISTS game_results_guest_idx ON game_results (guest_id)`
   schemaReady = true
+}
+
+// A device is "seen" whenever it's known to be playing (join, or a state
+// write) — upserts its players row so it shows up as a stable identity.
+async function touchPlayer(sql, id) {
+  if (!id) return
+  await sql`
+		INSERT INTO players (id) VALUES (${id})
+		ON CONFLICT (id) DO UPDATE SET last_seen_at = now()`
+}
+
+// Rack pile indices, matching src/utils/constants.ts RACK_PILE — the
+// server is the sole authority on final scoring, so this mirrors the
+// client's "sum of leftover tile values" end-of-game deduction exactly.
+const RACK_PILE = [1000, 1001]
+
+function finalScores(state) {
+  const [wordScoreHost, wordScoreGuest] = state.scores ?? [0, 0]
+  const leftover = [0, 0]
+  for (const c of state.cards ?? []) {
+    const seat = RACK_PILE.indexOf(c.pileIndex)
+    if (seat !== -1) leftover[seat] += c.value ?? 0
+  }
+  return [wordScoreHost - leftover[0], wordScoreGuest - leftover[1]]
 }
 
 // Which seat does this device hold? The server is the authority on roles —
@@ -114,17 +166,42 @@ export default {
 
     const url = new URL(req.url)
     const parts = url.pathname.split('/').filter(Boolean) // e.g. ["games", "ABCD", "join"]
-    if (parts[0] !== 'games') return json({ error: 'not found' }, 404)
-    const code = parts[1]?.toUpperCase()
     const dev = url.searchParams.get('d')
 
     try {
+      // GET /players/:id/games → history of finished games this player was in
+      if (parts[0] === 'players' && req.method === 'GET' && parts[2] === 'games') {
+        const playerId = parts[1]
+        const rows = await sql`
+					SELECT code, seed, host_id, guest_id, host_score, guest_score,
+						winner_seat, final_state, finished_at
+					FROM game_results
+					WHERE host_id = ${playerId} OR guest_id = ${playerId}
+					ORDER BY finished_at DESC LIMIT 200`
+        return json({
+          games: rows.map((r) => ({
+            code: r.code,
+            you: r.host_id === playerId ? 0 : 1,
+            opponentId: r.host_id === playerId ? r.guest_id : r.host_id,
+            hostScore: r.host_score,
+            guestScore: r.guest_score,
+            winnerSeat: r.winner_seat,
+            finalState: r.final_state,
+            finishedAt: r.finished_at,
+          })),
+        })
+      }
+
+      if (parts[0] !== 'games') return json({ error: 'not found' }, 404)
+      const code = parts[1]?.toUpperCase()
+
       // POST /games → create a game, returns its code
       if (req.method === 'POST' && !code) {
         // opportunistic cleanup of long-dead games
         ctx.waitUntil(
           sql`DELETE FROM games WHERE updated_at < now() - interval '30 days'`,
         )
+        ctx.waitUntil(touchPlayer(sql, dev))
         for (let i = 0; i < 5; i++) {
           const c = generateCode()
           const rows =
@@ -139,6 +216,7 @@ export default {
       // POST /games/:code/join → claim the guest seat (the host joining
       // its own game keeps the host seat)
       if (req.method === 'POST' && parts[2] === 'join') {
+        ctx.waitUntil(touchPlayer(sql, dev))
         const rows = await sql`
 					UPDATE games SET guest_joined = TRUE,
 						guest_id = CASE WHEN host_id = ${dev} THEN guest_id ELSE ${dev} END,
@@ -174,6 +252,10 @@ export default {
         const { state, seed, version } = await req.json()
         if (!state || typeof version !== 'number')
           return json({ error: 'bad body' }, 400)
+        ctx.waitUntil(touchPlayer(sql, dev))
+        const before = await sql`
+					SELECT state, host_id, guest_id FROM games WHERE code = ${code}`
+        const wasGameOver = before[0]?.state?.gameOver ?? false
         const rows = await sql`
 					UPDATE games
 					SET state = ${JSON.stringify(state)}::jsonb, seed = ${seed ?? null},
@@ -188,6 +270,21 @@ export default {
           // stale writer: hand back the current truth
           return json({ conflict: true, ...shape(cur[0], dev) }, 409)
         }
+        // record the result exactly once, the moment a game finishes —
+        // the leftover-rack deduction happens here, not on the client, so
+        // it's correct regardless of which client's upload wins any race.
+        if (state.gameOver && !wasGameOver) {
+          const [hostScore, guestScore] = finalScores(state)
+          const winnerSeat =
+            hostScore === guestScore ? null : hostScore > guestScore ? 0 : 1
+          const { host_id, guest_id } = before[0] ?? {}
+          ctx.waitUntil(
+            sql`INSERT INTO game_results
+							(code, seed, host_id, guest_id, host_score, guest_score, winner_seat, final_state)
+							VALUES (${code}, ${seed ?? null}, ${host_id ?? null}, ${guest_id ?? null},
+								${hostScore}, ${guestScore}, ${winnerSeat}, ${JSON.stringify(state)}::jsonb)`,
+          )
+        }
         // notify the player whose turn it now is (skip fresh deals)
         const subs = rows[0].push_subs ?? {}
         const next = state.currentPlayerIndex
@@ -195,6 +292,28 @@ export default {
           ctx.waitUntil(sendPush(subs[next], env))
         }
         return json({ version: rows[0].version })
+      }
+
+      // GET /games/:code/results → per-code win tally + recent history
+      if (req.method === 'GET' && parts[2] === 'results') {
+        const rows = await sql`
+					SELECT host_score, guest_score, winner_seat, finished_at
+					FROM game_results WHERE code = ${code}
+					ORDER BY finished_at DESC LIMIT 50`
+        const wins = [0, 0]
+        for (const r of rows) {
+          if (r.winner_seat === 0) wins[0]++
+          else if (r.winner_seat === 1) wins[1]++
+        }
+        return json({
+          wins,
+          games: rows.map((r) => ({
+            hostScore: r.host_score,
+            guestScore: r.guest_score,
+            winnerSeat: r.winner_seat,
+            finishedAt: r.finished_at,
+          })),
+        })
       }
 
       // GET /games/:code?v=N → poll; state omitted when nothing changed
