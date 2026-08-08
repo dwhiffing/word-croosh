@@ -8,7 +8,7 @@ import {
 	RACK_PILE,
 } from "../utils/constants";
 import { useGameStore, validatePlay } from "../utils/gameStore";
-import { resyncNow, useMultiplayerStore } from "../utils/multiplayerStore";
+import { useMultiplayerStore } from "../utils/multiplayerStore";
 import { BlankTileModal } from "./BlankTileModal";
 import Tile from "./Card";
 import { GameOverModal } from "./GameOverModal";
@@ -125,7 +125,7 @@ function App() {
 										{myTurn && state.swapMode && (
 											<>
 												<button
-													className="button px-3 py-1"
+													className="button px-6 py-4"
 													onClick={state.confirmSwap}
 												>
 													{state.swapCount > 0
@@ -133,7 +133,7 @@ function App() {
 														: "Pass"}
 												</button>
 												<button
-													className="button px-3 py-1"
+													className="button px-6 py-4"
 													onClick={state.cancelSwap}
 												>
 													Cancel
@@ -143,7 +143,7 @@ function App() {
 										{myTurn && !state.swapMode && (
 											<>
 												<button
-													className="button px-3 py-1"
+													className="button px-6 py-4"
 													onClick={state.submitTurn}
 													disabled={!state.canSubmit}
 												>
@@ -152,7 +152,7 @@ function App() {
 														` (${state.pendingScore})`}
 												</button>
 												<button
-													className="button px-3 py-1"
+													className="button px-6 py-4"
 													onClick={state.recallTiles}
 													disabled={state.pending.length === 0}
 												>
@@ -160,14 +160,14 @@ function App() {
 												</button>
 												{state.pending.length > 0 ? (
 													<button
-														className="button px-3 py-1"
+														className="button px-6 py-4"
 														onClick={state.undoLastTile}
 													>
 														Back
 													</button>
 												) : (
 													<button
-														className="button px-3 py-1"
+														className="button px-6 py-4"
 														onClick={state.startPass}
 													>
 														{state.canSwap ? "Swap" : "Pass"}
@@ -175,19 +175,14 @@ function App() {
 												)}
 											</>
 										)}
-										<button
-											className="button px-3 py-1"
-											onClick={state.shuffleRack}
-										>
-											Shuffle
-										</button>
-										<button
-											className="button px-3 py-1"
-											onClick={() => resyncNow()}
-											title="Refresh connection"
-										>
-											🔄
-										</button>
+										{!state.swapMode && (
+											<button
+												className="button px-6 py-4"
+												onClick={state.shuffleRack}
+											>
+												Shuffle
+											</button>
+										)}
 									</div>
 								)}
 							</div>
