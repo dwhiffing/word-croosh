@@ -4,11 +4,15 @@ import { cn } from '../utils'
 
 export function Dropdown({
   className,
+  triggerClassName,
   label,
   items,
+  openUp,
 }: {
   className?: string
+  triggerClassName?: string // replaces the default trigger sizing
   label: ReactNode
+  openUp?: boolean // desktop only: open above the trigger (touch is centered)
   items: {
     label: ReactNode
     onClick: () => void
@@ -80,7 +84,7 @@ export function Dropdown({
   return (
     <div className={cn('relative', className)} ref={ref}>
       <button
-        className="button w-full h-8 lg:h-10"
+        className={cn('button', triggerClassName ?? 'w-full h-8 lg:h-10')}
         onClick={() => setOpen(!open)}>
         {label}
       </button>
@@ -104,7 +108,8 @@ export function Dropdown({
       ) : (
         <div
           className={cn(
-            'absolute right-0 top-full mt-2 bg-on-surface rounded shadow-lg min-w-full overflow-hidden transition-opacity duration-300',
+            'absolute right-0 bg-on-surface rounded shadow-lg min-w-full overflow-hidden transition-opacity duration-300',
+            openUp ? 'bottom-full mb-2' : 'top-full mt-2',
             open ? 'opacity-100' : 'opacity-0 pointer-events-none',
           )}>
           {menuItems}

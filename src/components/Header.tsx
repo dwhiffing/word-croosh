@@ -1,24 +1,8 @@
 import { useGameStore } from "../utils/gameStore";
-import { useMultiplayerStore } from "../utils/multiplayerStore";
-import { pushSupported } from "../utils/push";
-import { Dropdown } from "./Dropdown";
-import { HamburgerSVG } from "./svg";
+import { MenuDropdown } from "./MenuDropdown";
 
 export function Header() {
-	// const newGame = useGameStore((s) => s.newGame)
 	const openInstructions = useGameStore((s) => s.openInstructions);
-	const openTwoLetterWords = useGameStore((s) => s.openTwoLetterWords);
-	const openUnseenTiles = useGameStore((s) => s.openUnseenTiles);
-	const gameActive = useGameStore((s) => s.cards.length > 0);
-	const {
-		mode,
-		openLobby,
-		disconnect,
-		notificationsEnabled,
-		enableNotifications,
-		showNetworkDebug,
-		toggleNetworkDebug,
-	} = useMultiplayerStore();
 
 	return (
 		<div className="flex justify-between items-center text-white py-2 px-3 lg:p-5 relative z-header pointer-events-none">
@@ -36,66 +20,7 @@ export function Header() {
 			</div>
 
 			<div className="flex-1 flex items-center justify-end gap-2 pointer-events-auto">
-				<Dropdown
-					className="w-10"
-					label={<HamburgerSVG />}
-					items={[
-						...(gameActive
-							? [
-									{
-										label: "Two Letter Words",
-										onClick: () => openTwoLetterWords(),
-									},
-									{
-										label: "Unseen Tiles",
-										onClick: () => openUnseenTiles(),
-									},
-								]
-							: []),
-						...(pushSupported() && !notificationsEnabled
-							? [
-									{
-										label: "Enable Notifications",
-										onClick: () => void enableNotifications(),
-									},
-								]
-							: []),
-						...(mode !== "multiplayer"
-							? [
-									{
-										label: "Host Game",
-										onClick: () => {
-											openLobby("hosting");
-											useMultiplayerStore.getState().hostGame();
-										},
-									},
-									{
-										label: "Join Game",
-										onClick: () => openLobby("joining"),
-									},
-									// {
-									//   label: 'Local Game vs AI',
-									//   onClick: () => newGame(),
-									// },
-								]
-							: []),
-						...(mode === "multiplayer"
-							? [
-									{
-										label: "Leave Multiplayer",
-										onClick: () => disconnect(),
-									},
-								]
-							: []),
-						{
-							label: showNetworkDebug
-								? "Hide Network Debug"
-								: "Show Network Debug",
-							onClick: () => toggleNetworkDebug(),
-							active: showNetworkDebug,
-						},
-					]}
-				/>
+				<MenuDropdown className="w-10" />
 			</div>
 		</div>
 	);

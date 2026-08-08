@@ -15,6 +15,7 @@ import { GameOverModal } from "./GameOverModal";
 import { Header } from "./Header";
 import { InstructionsModal } from "./InstructionsModal";
 import { LobbyModal } from "./LobbyModal";
+import { MenuDropdown } from "./MenuDropdown";
 import { NetworkDebugPanel } from "./NetworkDebugPanel";
 import { Rack, Square } from "./Pile";
 import { TwoLetterWordsModal } from "./TwoLetterWordsModal";
@@ -176,12 +177,19 @@ function App() {
 											</>
 										)}
 										{!state.swapMode && (
-											<button
-												className="button px-6 py-4"
-												onClick={state.shuffleRack}
-											>
-												Shuffle
-											</button>
+											<>
+												<button
+													className="button px-6 py-4"
+													onClick={state.shuffleRack}
+												>
+													Shuffle
+												</button>
+												<MenuDropdown
+													className="self-stretch w-12"
+													triggerClassName="w-full h-full"
+													openUp
+												/>
+											</>
 										)}
 									</div>
 								)}
