@@ -2,6 +2,8 @@
 // The server stores an authoritative SavedGameState per game, guarded by an
 // optimistic `version`; see server/worker.js for the contract.
 
+import type { TileColorName } from './constants'
+
 const API_URL =
   (import.meta.env.VITE_API_URL as string | undefined) ??
   'https://word-croosh-api.danielwhiffing.workers.dev'
@@ -24,6 +26,10 @@ export interface GameData {
   you?: 0 | 1 | null // which seat this device holds, per the server
   changed?: boolean
   conflict?: boolean
+  hostName?: string | null
+  guestName?: string | null
+  hostColor?: TileColorName | null
+  guestColor?: TileColorName | null
 }
 
 // One row per finished game under a code, recorded server-side the moment
@@ -154,4 +160,28 @@ export async function apiGetPlayerHistory(
   if (status !== 200)
     throw new Error((data as { error?: string }).error ?? `HTTP ${status}`)
   return (data as unknown as { games: PlayerGameHistoryEntry[] }).games
+}
+
+export interface PlayerProfile {
+  name: string | null
+  color: TileColorName | null
+}
+
+export async function apiGetPlayer(playerId: string): Promise<PlayerProfile> {
+  const { status, data } = await request(`/players/${playerId}`)
+  if (status !== 200)
+    throw new Error((data as { error?: string }).error ?? `HTTP ${status}`)
+  return data as unknown as PlayerProfile
+}
+
+export async function apiSetPlayer(
+  playerId: string,
+  profile: { name: string; color: TileColorName },
+): Promise<void> {
+  const { status, data } = await request(`/players/${playerId}`, {
+    method: 'PUT',
+    body: JSON.stringify(profile),
+  })
+  if (status !== 200)
+    throw new Error((data as { error?: string }).error ?? `HTTP ${status}`)
 }

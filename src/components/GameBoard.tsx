@@ -16,6 +16,7 @@ import { GameOverModal } from './modals/GameOverModal'
 import { HistoryModal } from './modals/HistoryModal'
 import { InstructionsModal } from './modals/InstructionsModal'
 import { LobbyModal } from './modals/LobbyModal'
+import { NameModal } from './modals/NameModal'
 import { TwoLetterWordsModal } from './modals/TwoLetterWordsModal'
 import { UnseenTilesModal } from './modals/UnseenTilesModal'
 import { NetworkDebugPanel } from './NetworkDebugPanel'
@@ -30,6 +31,9 @@ function App() {
     peerConnected,
     lastGame,
     reconnectLastGame,
+    myName,
+    hostName,
+    guestName,
   } = useMultiplayerStore()
   const state = useGameStore(
     useShallow((s) => {
@@ -76,6 +80,9 @@ function App() {
   const ownRack = RACK_PILE[lp]
   const lastPlay =
     state.lastPlay && `${state.lastPlay.word} (${state.lastPlay.score}) - `
+  const myDisplayName = myName ?? 'You'
+  const opponentDisplayName =
+    (lp === 0 ? guestName : hostName) ?? 'Them'
 
   return (
     <div className="bg-surface absolute inset-0">
@@ -88,11 +95,11 @@ function App() {
             <div className="flex flex-col">
               <div className="score-row">
                 <span className={myTurn ? 'active-player' : ''}>
-                  You: {state.scores[lp]}
+                  {myDisplayName}: {state.scores[lp]}
                 </span>
                 <span>/</span>
                 <span className={!myTurn ? 'active-player' : ''}>
-                  Them: {state.scores[lp === 0 ? 1 : 0]}
+                  {opponentDisplayName}: {state.scores[lp === 0 ? 1 : 0]}
                 </span>
               </div>
               {!state.gameOver && (
@@ -100,12 +107,12 @@ function App() {
                   <>
                     <b>{lastPlay}</b>
                     {state.givenUpBy === lp
-                      ? 'You gave up, their turn!'
+                      ? `You gave up, ${opponentDisplayName}'s turn!`
                       : state.givenUpBy != null
-                        ? 'They gave up, your turn!'
+                        ? `${opponentDisplayName} gave up, your turn!`
                         : myTurn
                           ? 'Your turn!'
-                          : 'Their turn!'}
+                          : `${opponentDisplayName}'s turn!`}
                   </>
                 </div>
               )}
@@ -228,6 +235,7 @@ function App() {
       <GameOverModal />
       <LobbyModal key={showLobbyModal ? 'show' : 'hide'} />
       <HistoryModal />
+      <NameModal />
       <NetworkDebugPanel />
     </div>
   )

@@ -44,6 +44,7 @@ export const returnTileToRack = (
           cardPileIndex: slot,
           // reset a blank back to unassigned when it returns to the rack
           letter: c.isBlank ? '' : c.letter,
+          placedBy: null,
         }
       : c,
   )
@@ -126,7 +127,13 @@ export function commitPlacements(
   cards = cards.map((c) => {
     const p = placements.find((pl) => pl.tileId === c.id)
     return p
-      ? { ...c, pileIndex: p.pile, cardPileIndex: 0, letter: p.letter }
+      ? {
+          ...c,
+          pileIndex: p.pile,
+          cardPileIndex: 0,
+          letter: p.letter,
+          placedBy: playerIndex,
+        }
       : c
   })
 

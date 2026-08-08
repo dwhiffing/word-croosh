@@ -2,11 +2,21 @@ import debounce from 'lodash/debounce'
 import { memo, useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { getCardPilePosition, useForceUpdate, useWindowEvent } from '../utils'
-import { CARD_TRANSITION_DURATION, RACK_PILE } from '../utils/constants'
+import {
+  CARD_TRANSITION_DURATION,
+  RACK_PILE,
+  TILE_COLOR_HEX,
+} from '../utils/constants'
 import { type GameState, useGameStore } from '../utils/gameStore'
+import { useMultiplayerStore } from '../utils/multiplayerStore'
 
 const Tile = ({ cardId }: { cardId: number }) => {
   const store = useGameStore(useShallow(getShallowTileState(cardId)))
+  // Colors are a multiplayer-profile concept, not game state — read them
+  // separately so a solo/AI game (no colors set) just renders the default.
+  const { hostColor, guestColor } = useMultiplayerStore(
+    useShallow((s) => ({ hostColor: s.hostColor, guestColor: s.guestColor })),
+  )
   const [zIndex, setZIndex] = useState(store.zIndex)
   const [hasMounted, setHasMounted] = useState(false)
   useWindowEvent('resize', debounce(useForceUpdate(), 100))
@@ -25,6 +35,7 @@ const Tile = ({ cardId }: { cardId: number }) => {
 
   const translate = `${store.x}px ${store.y}px 0`
   const dur = store.isDragging ? 0 : CARD_TRANSITION_DURATION
+  const ownerColor = store.owner === 0 ? hostColor : store.owner === 1 ? guestColor : null
 
   return (
     <div
@@ -44,7 +55,16 @@ const Tile = ({ cardId }: { cardId: number }) => {
         willChange: 'transform',
         opacity: store.opacity,
       }}>
-      <div className="card-front tile-front">
+      <div
+        className="card-front tile-front"
+        style={
+          ownerColor
+            ? {
+                background: TILE_COLOR_HEX[ownerColor],
+                color: '#000',
+              }
+            : undefined
+        }>
         {store.isBlank && !store.letter ? null : (
           <>
             <span className="tile-letter">{store.letter}</span>
@@ -63,7 +83,7 @@ const getShallowTileState =
   (cardId: number) =>
   (state: GameState): TileShallowState => {
     const card = state.cards[cardId]
-    const { cardPileIndex, pileIndex, letter, value, isBlank } = card
+    const { cardPileIndex, pileIndex, letter, value, isBlank, placedBy } = card
     const { mouseX, mouseY, pressed } = state.cursorState
     const {
       x: xPos,
@@ -93,6 +113,19 @@ const getShallowTileState =
 
     const zIndex = isOnBoard ? 10 : pileIndex === ownRack ? 100 : 0
 
+    // Whose color this tile shows: on the board that's whoever committed it
+    // (permanent) — or, if it's still pending (placed but not submitted),
+    // the local player, since only they can have tiles pending. In a rack
+    // it's whoever's rack it's currently sitting in; the bag has no owner.
+    const isPending = state.pending.includes(cardId)
+    const owner: 0 | 1 | null = isOnBoard
+      ? placedBy ?? (isPending ? state.localPlayerIndex : null)
+      : pileIndex === RACK_PILE[0]
+        ? 0
+        : pileIndex === RACK_PILE[1]
+          ? 1
+          : null
+
     return {
       x,
       y,
@@ -109,6 +142,7 @@ const getShallowTileState =
       letter,
       value,
       isBlank,
+      owner,
     }
   }
 
@@ -128,6 +162,7 @@ type TileShallowState = {
   letter: string
   value: number
   isBlank: boolean
+  owner: 0 | 1 | null
 }
 
 export default memo(Tile)

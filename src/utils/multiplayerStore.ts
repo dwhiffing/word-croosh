@@ -11,14 +11,18 @@ import { clearUrlParams, setUrlParam } from '.'
 import {
   apiCreateGame,
   apiGetGame,
+  apiGetPlayer,
   apiGetResults,
   apiJoinGame,
   apiPutPushSub,
   apiPutState,
+  apiSetPlayer,
+  deviceId,
   type GameData,
   type GameResults,
   type SavedGameState,
 } from './api'
+import type { TileColorName } from './constants'
 import { pushNetworkDebug } from './networkDebug'
 import { clearTurnNotifications, enablePush, initPush } from './push'
 
@@ -37,6 +41,15 @@ interface MultiplayerStore {
   results: GameResults | null // win tally + history for this code, from the DB
   lastGame: LastGame | null // most recent game, for the reconnect option
   notificationsEnabled: boolean
+  // Our own profile (persisted server-side, keyed by device id).
+  myName: string | null
+  myColor: TileColorName | null
+  showNameModal: boolean // prompted on load until a name is set
+  // The other seat's profile for the current game code, once known.
+  hostName: string | null
+  guestName: string | null
+  hostColor: TileColorName | null
+  guestColor: TileColorName | null
   openLobby: (phase: Exclude<LobbyPhase, 'connecting'>) => void
   closeLobby: () => void
   hostGame: (code?: string) => void
@@ -45,6 +58,9 @@ interface MultiplayerStore {
   reconnectLastGame: () => void
   enableNotifications: () => Promise<void>
   disconnect: () => void
+  openNameModal: () => void
+  closeNameModal: () => void
+  setMyProfile: (name: string, color: TileColorName) => Promise<void>
 }
 
 // gameStore wires itself into this store once at module load, so it can
@@ -151,6 +167,10 @@ function reconcile(data: GameData, forceAdopt = false) {
       reconnecting: false,
       mode: 'multiplayer',
       showLobbyModal: false,
+      hostName: data.hostName ?? s.hostName,
+      guestName: data.guestName ?? s.guestName,
+      hostColor: data.hostColor ?? s.hostColor,
+      guestColor: data.guestColor ?? s.guestColor,
     })
     pushNetworkDebug('Opponent joined — starting game')
     dealPending = false
@@ -166,6 +186,10 @@ function reconcile(data: GameData, forceAdopt = false) {
     reconnecting: false,
     mode: 'multiplayer',
     showLobbyModal: false,
+    hostName: data.hostName ?? s.hostName,
+    guestName: data.guestName ?? s.guestName,
+    hostColor: data.hostColor ?? s.hostColor,
+    guestColor: data.guestColor ?? s.guestColor,
   })
   if (state.gameOver && s.gameCode) void fetchResults(s.gameCode)
 
@@ -296,6 +320,13 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
   results: null,
   lastGame: loadLastGame(),
   notificationsEnabled: false,
+  myName: null,
+  myColor: null,
+  showNameModal: false,
+  hostName: null,
+  guestName: null,
+  hostColor: null,
+  guestColor: null,
 
   openLobby: (phase) =>
     set({ showLobbyModal: true, lobbyPhase: phase, error: null }),
@@ -311,7 +342,15 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 
   hostGame: async (existingCode?: string) => {
     localPlayerIndex = 0
-    set({ lobbyPhase: 'hosting', error: null, results: null })
+    set({
+      lobbyPhase: 'hosting',
+      error: null,
+      results: null,
+      hostName: null,
+      guestName: null,
+      hostColor: null,
+      guestColor: null,
+    })
     try {
       if (existingCode) {
         // Resume a game we were hosting (e.g. after a reload).
@@ -347,7 +386,15 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 
   joinGame: async (code: string) => {
     localPlayerIndex = 1
-    set({ lobbyPhase: 'connecting', error: null, results: null })
+    set({
+      lobbyPhase: 'connecting',
+      error: null,
+      results: null,
+      hostName: null,
+      guestName: null,
+      hostColor: null,
+      guestColor: null,
+    })
     try {
       const data = await apiJoinGame(code)
       if (!data) {
@@ -357,7 +404,13 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
       }
       serverVersion = data.version
       if (data.you != null) localPlayerIndex = data.you
-      set({ gameCode: code.toUpperCase() })
+      set({
+        gameCode: code.toUpperCase(),
+        hostName: data.hostName ?? null,
+        guestName: data.guestName ?? null,
+        hostColor: data.hostColor ?? null,
+        guestColor: data.guestColor ?? null,
+      })
       setUrlParam('join', code.toUpperCase())
       saveLastGame(code, localPlayerIndex)
       pushNetworkDebug(`Joined game ${code.toUpperCase()}`)
@@ -422,8 +475,20 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
       gameCode: null,
       lobbyPhase: 'joining' as LobbyPhase,
       results: null,
+      hostName: null,
+      guestName: null,
+      hostColor: null,
+      guestColor: null,
     })
     gameHooks?.onDisconnect()
+  },
+
+  openNameModal: () => set({ showNameModal: true }),
+  closeNameModal: () => set({ showNameModal: false }),
+
+  setMyProfile: async (name: string, color: TileColorName) => {
+    await apiSetPlayer(deviceId(), { name, color })
+    set({ myName: name, myColor: color, showNameModal: false })
   },
 }))
 
@@ -442,6 +507,15 @@ void initPush().then((sub) => {
 // Opening the app means the user has seen the game — drop any stale
 // "your turn" notification from the tray.
 void clearTurnNotifications()
+
+// Load our own profile on startup; prompt for a name if one was never set.
+void apiGetPlayer(deviceId()).then(({ name, color }) => {
+  useMultiplayerStore.setState({
+    myName: name,
+    myColor: color,
+    showNameModal: name == null,
+  })
+})
 
 // Auto-connect from URL params on page load
 export function autoConnect() {

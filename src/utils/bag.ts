@@ -32,6 +32,7 @@ export function generateTiles(seed: number): CardType[] {
       letter: isBlank ? '' : letter,
       value: LETTER_VALUES[letter] ?? 0,
       isBlank,
+      placedBy: null,
     }
   })
 }

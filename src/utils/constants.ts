@@ -16,6 +16,41 @@ export const FIRST_SQUARE_PILE = 1
 export const LAST_SQUARE_PILE = BOARD_SIZE * BOARD_SIZE // 225
 export const RACK_PILE: [number, number] = [1000, 1001]
 
+// The 8 selectable player tile colors (see server/worker.js TILE_COLORS —
+// keep these two lists in sync). All chosen light enough that black tile
+// text stays readable on every one.
+export type TileColorName =
+  | 'yellow'
+  | 'orange'
+  | 'pink'
+  | 'purple'
+  | 'blue'
+  | 'teal'
+  | 'green'
+  | 'gray'
+
+export const TILE_COLORS: TileColorName[] = [
+  'yellow',
+  'orange',
+  'pink',
+  'purple',
+  'blue',
+  'teal',
+  'green',
+  'gray',
+]
+
+export const TILE_COLOR_HEX: Record<TileColorName, string> = {
+  yellow: '#e9c893', // the original default tile color
+  orange: '#e8a869',
+  pink: '#e6a8c4',
+  purple: '#c9a8e0',
+  blue: '#a3c6e8',
+  teal: '#9ed4c9',
+  green: '#b3d98a',
+  gray: '#c9c9c9',
+}
+
 export const BONUS_COLORS: Record<NonNullable<Bonus>, string> = {
   TW: '#e05a4c',
   DW: '#e59aa0',

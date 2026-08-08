@@ -28,6 +28,11 @@ const json = (data, status = 200) =>
 let schemaReady = false
 async function ensureSchema(sql) {
   if (schemaReady) return
+  // CREATE TABLE IF NOT EXISTS only handles a table that doesn't exist yet —
+  // on a database from before a column was added, it silently no-ops and
+  // that column is never created. Every column added after the table's
+  // original release needs an explicit ALTER ... ADD COLUMN IF NOT EXISTS
+  // below so this stays idempotent on both fresh and pre-existing databases.
   await sql`
 		CREATE TABLE IF NOT EXISTS games (
 			code TEXT PRIMARY KEY,
@@ -41,6 +46,9 @@ async function ensureSchema(sql) {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`
+  await sql`ALTER TABLE games ADD COLUMN IF NOT EXISTS host_color TEXT`
+  await sql`ALTER TABLE games ADD COLUMN IF NOT EXISTS guest_color TEXT`
+
   // One row per device that has ever played — `id` is the client's
   // persistent device UUID (the same one already used as host_id/guest_id).
   await sql`
@@ -49,6 +57,9 @@ async function ensureSchema(sql) {
 			first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`
+  await sql`ALTER TABLE players ADD COLUMN IF NOT EXISTS name TEXT`
+  await sql`ALTER TABLE players ADD COLUMN IF NOT EXISTS color TEXT`
+
   // One row per finished game (a rematch under the same code gets its own
   // row here, unlike `games` which is overwritten in place). Stores the
   // full final board so a player can reopen exactly what the game looked
@@ -81,6 +92,30 @@ async function touchPlayer(sql, id) {
 		ON CONFLICT (id) DO UPDATE SET last_seen_at = now()`
 }
 
+// The 8 selectable tile colors, matching src/utils/constants.ts TILE_COLORS.
+// A player's `players.color` is their stored preference; if it collides
+// with their opponent's in a given game, one seat gets reassigned a random
+// different color for that game only (see resolveGameColors) — the stored
+// preference itself never changes from a collision.
+const TILE_COLORS = [
+  'yellow', 'orange', 'pink', 'purple', 'blue', 'teal', 'green', 'gray',
+]
+
+function randomColor(excluding) {
+  const options = TILE_COLORS.filter((c) => c !== excluding)
+  return options[Math.floor(Math.random() * options.length)]
+}
+
+// Resolve the two seats' effective in-game colors from their stored
+// preferences, reassigning the guest's if it collides with the host's.
+function resolveGameColors(hostColor, guestColor) {
+  hostColor ??= randomColor()
+  if (!guestColor || guestColor === hostColor) {
+    guestColor = randomColor(hostColor)
+  }
+  return [hostColor, guestColor]
+}
+
 // Rack pile indices, matching src/utils/constants.ts RACK_PILE — the
 // server is the sole authority on final scoring, so this mirrors the
 // client's "sum of leftover tile values" end-of-game deduction exactly.
@@ -103,6 +138,21 @@ function seatOf(row, dev) {
   if (dev && row.guest_id === dev) return 1
   return null
 }
+
+// [hostValue, guestValue] for one players.<column>, either null if that
+// seat has no player row / no value set yet.
+async function columnFor(sql, row, column) {
+  const ids = [row.host_id, row.guest_id].filter(Boolean)
+  if (!ids.length) return [null, null]
+  const rows =
+    column === 'color'
+      ? await sql`SELECT id, color FROM players WHERE id = ANY(${ids})`
+      : await sql`SELECT id, name FROM players WHERE id = ANY(${ids})`
+  const byId = new Map(rows.map((r) => [r.id, r[column]]))
+  return [byId.get(row.host_id) ?? null, byId.get(row.guest_id) ?? null]
+}
+const namesFor = (sql, row) => columnFor(sql, row, 'name')
+const colorPrefsFor = (sql, row) => columnFor(sql, row, 'color')
 
 function generateCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
@@ -169,6 +219,34 @@ export default {
     const dev = url.searchParams.get('d')
 
     try {
+      // GET /players/:id → { name, color } (either null if never set)
+      if (parts[0] === 'players' && req.method === 'GET' && !parts[2]) {
+        ctx.waitUntil(touchPlayer(sql, parts[1]))
+        const rows = await sql`
+					SELECT name, color FROM players WHERE id = ${parts[1]}`
+        return json({
+          name: rows[0]?.name ?? null,
+          color: rows[0]?.color ?? null,
+        })
+      }
+
+      // PUT /players/:id { name, color } → set/change profile.
+      // name: up to 12 chars. color: one of TILE_COLORS — this is the
+      // player's stored *preference*; a same-game collision with the
+      // opponent is resolved separately (see resolveGameColors), not here.
+      if (parts[0] === 'players' && req.method === 'PUT' && !parts[2]) {
+        const { name, color } = await req.json()
+        if (typeof name !== 'string' || !name.trim() || name.length > 12)
+          return json({ error: 'bad name' }, 400)
+        if (!TILE_COLORS.includes(color))
+          return json({ error: 'bad color' }, 400)
+        await sql`
+					INSERT INTO players (id, name, color) VALUES (${parts[1]}, ${name.trim()}, ${color})
+					ON CONFLICT (id) DO UPDATE SET
+						name = ${name.trim()}, color = ${color}, last_seen_at = now()`
+        return json({ ok: true })
+      }
+
       // GET /players/:id/games → history of finished games this player was in
       if (parts[0] === 'players' && req.method === 'GET' && parts[2] === 'games') {
         const playerId = parts[1]
@@ -222,14 +300,31 @@ export default {
 						guest_id = CASE WHEN host_id = ${dev} THEN guest_id ELSE ${dev} END,
 						version = version + 1, updated_at = now()
 					WHERE code = ${code}
-					RETURNING version, seed, state, host_id, guest_id`
+					RETURNING version, seed, state, host_id, guest_id, host_color, guest_color`
         if (!rows.length) return json({ error: 'no such game' }, 404)
-        const g = rows[0]
+        let g = rows[0]
+        // Resolve each seat's in-game color once, the first time both seats
+        // are known — a reconnect/rejoin must not reshuffle an already-set
+        // pair, so this only fires while host_color is still unset.
+        if (!g.host_color) {
+          const [hostPref, guestPref] = await colorPrefsFor(sql, g)
+          const [hostColor, guestColor] = resolveGameColors(hostPref, guestPref)
+          const updated = await sql`
+						UPDATE games SET host_color = ${hostColor}, guest_color = ${guestColor}
+						WHERE code = ${code}
+						RETURNING version, seed, state, host_id, guest_id, host_color, guest_color`
+          g = updated[0]
+        }
+        const [hostName, guestName] = await namesFor(sql, g)
         return json({
           version: g.version,
           seed: g.seed,
           state: g.state,
           you: seatOf(g, dev),
+          hostName,
+          guestName,
+          hostColor: g.host_color,
+          guestColor: g.guest_color,
         })
       }
 
@@ -264,11 +359,12 @@ export default {
 					RETURNING version, push_subs`
         if (!rows.length) {
           const cur = await sql`
-						SELECT version, seed, guest_joined, state, host_id, guest_id
+						SELECT version, seed, guest_joined, state, host_id, guest_id,
+							host_color, guest_color
 						FROM games WHERE code = ${code}`
           if (!cur.length) return json({ error: 'no such game' }, 404)
           // stale writer: hand back the current truth
-          return json({ conflict: true, ...shape(cur[0], dev) }, 409)
+          return json({ conflict: true, ...(await shape(sql, cur[0], dev)) }, 409)
         }
         // record the result exactly once, the moment a game finishes —
         // the leftover-rack deduction happens here, not on the client, so
@@ -320,7 +416,8 @@ export default {
       if (req.method === 'GET' && !parts[2]) {
         const since = Number(url.searchParams.get('v') ?? -1)
         const rows = await sql`
-					SELECT version, seed, guest_joined, state, host_id, guest_id
+					SELECT version, seed, guest_joined, state, host_id, guest_id,
+						host_color, guest_color
 					FROM games WHERE code = ${code}`
         if (!rows.length) return json({ error: 'no such game' }, 404)
         const g = rows[0]
@@ -330,7 +427,7 @@ export default {
             version: g.version,
             you: seatOf(g, dev),
           })
-        return json({ changed: true, ...shape(g, dev) })
+        return json({ changed: true, ...(await shape(sql, g, dev)) })
       }
 
       return json({ error: 'not found' }, 404)
@@ -340,12 +437,17 @@ export default {
   },
 }
 
-function shape(row, dev) {
+async function shape(sql, row, dev) {
+  const [hostName, guestName] = await namesFor(sql, row)
   return {
     version: row.version,
     seed: row.seed,
     guestJoined: row.guest_joined,
     state: row.state,
     you: seatOf(row, dev),
+    hostName,
+    guestName,
+    hostColor: row.host_color ?? null,
+    guestColor: row.guest_color ?? null,
   }
 }

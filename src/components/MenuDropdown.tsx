@@ -24,6 +24,7 @@ export function MenuDropdown({
     disconnect,
     notificationsEnabled,
     enableNotifications,
+    openNameModal,
   } = useMultiplayerStore()
   const { visible: showNetworkDebug, toggle: toggleNetworkDebug } =
     useNetworkDebugStore()
@@ -61,6 +62,10 @@ export function MenuDropdown({
           : []),
         ...(mode !== 'multiplayer'
           ? [
+              {
+                label: 'Change Name',
+                onClick: () => openNameModal(),
+              },
               {
                 label: 'Host Game',
                 onClick: () => {
