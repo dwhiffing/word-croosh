@@ -58,6 +58,26 @@ async function ensureSchema(sql) {
 		)`
   await sql`ALTER TABLE players ADD COLUMN IF NOT EXISTS name TEXT`
   await sql`ALTER TABLE players ADD COLUMN IF NOT EXISTS color TEXT`
+  // PIN-based login: a name + 4-digit PIN recovers a player's identity on a
+  // new device (see POST /players/login). Hashed, never stored/returned as
+  // plaintext. Name uniqueness is enforced case-insensitively via a partial
+  // index (partial so it doesn't choke on old NULL-named rows, and NULLIF
+  // on empty string so a blank name can't collide) — this can't be a plain
+  // UNIQUE column constraint added after the fact if any duplicates already
+  // exist, so it's a best-effort index; the login/name-set queries below are
+  // what actually enforce it going forward.
+  await sql`ALTER TABLE players ADD COLUMN IF NOT EXISTS pin_hash TEXT`
+  // Guarded in a try/catch: if any pre-existing rows already collide on
+  // name (case-insensitively), creating the index throws and would
+  // otherwise break ensureSchema — and therefore the whole worker — on
+  // every request. Degrades to "not yet enforced" rather than "down".
+  try {
+    await sql`
+			CREATE UNIQUE INDEX IF NOT EXISTS players_name_unique_idx
+			ON players (lower(name)) WHERE name IS NOT NULL`
+  } catch {
+    // pre-existing duplicate names — see comment above
+  }
 
   // One row per seat in a game — replaces the old host_id/guest_id/
   // host_color/guest_color named-column scheme so a game can have any
@@ -118,6 +138,21 @@ async function ensureSchema(sql) {
 		END $$`
   await sql`CREATE INDEX IF NOT EXISTS game_results_code_idx ON game_results (code)`
   schemaReady = true
+}
+
+const b64url = (buf) =>
+  btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')
+
+// PIN hashing (SHA-256 with a fixed app-level salt — a 4-digit PIN has only
+// 10,000 possibilities so this is not meant to resist a targeted brute
+// force; it just avoids storing PINs in plaintext against casual DB access).
+async function hashPin(pin) {
+  const data = new TextEncoder().encode(`word-croosh-pin:${pin}`)
+  const digest = await crypto.subtle.digest('SHA-256', data)
+  return b64url(digest)
 }
 
 // A device is "seen" whenever it's known to be playing (join, or a state
@@ -201,11 +236,6 @@ function generateCode() {
 }
 
 // ── Web Push (payload-less, RFC 8292 VAPID) ─────────────────────────
-const b64url = (buf) =>
-  btoa(String.fromCharCode(...new Uint8Array(buf)))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '')
 
 async function vapidAuthHeader(endpoint, env) {
   const enc = (o) => b64url(new TextEncoder().encode(JSON.stringify(o)))
@@ -268,30 +298,69 @@ export default {
         })
       }
 
-      // PUT /players/:id { name, color } → set/change profile.
-      // name: up to 12 chars. color: one of TILE_COLORS — this is the
-      // player's stored *preference*; a same-game collision with another
-      // seat is resolved separately (see resolveSeatColor), not here.
+      // PUT /players/:id { name, color, pin } → set/change profile.
+      // name: up to 12 chars, unique (case-insensitive). color: one of
+      // TILE_COLORS — this is the player's stored *preference*; a
+      // same-game collision with another seat is resolved separately (see
+      // resolveSeatColor), not here. pin: exactly 4 digits, required —
+      // it's what lets this name+pin recover the account on a new device
+      // (see POST /players/login). Changing color/keeping the same name
+      // doesn't require re-entering the pin correctly since it's not a
+      // login, just a profile edit from the device that already holds it;
+      // but changing the pin itself always needs one, so it's simplest to
+      // always require it and just re-hash on every save.
       if (parts[0] === 'players' && req.method === 'PUT' && !parts[2]) {
-        const { name, color } = await req.json()
+        const { name, color, pin } = await req.json()
         if (typeof name !== 'string' || !name.trim() || name.length > 12)
           return json({ error: 'bad name' }, 400)
         if (!TILE_COLORS.includes(color))
           return json({ error: 'bad color' }, 400)
+        if (typeof pin !== 'string' || !/^\d{4}$/.test(pin))
+          return json({ error: 'pin must be exactly 4 digits' }, 400)
+        const trimmed = name.trim()
+        const clash = await sql`
+					SELECT id FROM players WHERE lower(name) = lower(${trimmed}) AND id != ${parts[1]}`
+        if (clash.length) return json({ error: 'name already taken' }, 409)
+        const pinHash = await hashPin(pin)
         await sql`
-					INSERT INTO players (id, name, color) VALUES (${parts[1]}, ${name.trim()}, ${color})
+					INSERT INTO players (id, name, color, pin_hash) VALUES (${parts[1]}, ${trimmed}, ${color}, ${pinHash})
 					ON CONFLICT (id) DO UPDATE SET
-						name = ${name.trim()}, color = ${color}, last_seen_at = now()`
+						name = ${trimmed}, color = ${color}, pin_hash = ${pinHash}, last_seen_at = now()`
         return json({ ok: true })
+      }
+
+      // POST /players/login { name, pin } → { playerId } if the name+pin
+      // match an existing player record, so a new device can recover the
+      // identity behind that name instead of creating a fresh one. Client
+      // then overwrites its local device id with the returned playerId.
+      if (parts[0] === 'players' && req.method === 'POST' && parts[1] === 'login') {
+        const { name, pin } = await req.json()
+        if (typeof name !== 'string' || !name.trim())
+          return json({ error: 'bad name' }, 400)
+        if (typeof pin !== 'string' || !/^\d{4}$/.test(pin))
+          return json({ error: 'pin must be exactly 4 digits' }, 400)
+        const pinHash = await hashPin(pin)
+        const rows = await sql`
+					SELECT id FROM players WHERE lower(name) = lower(${name.trim()}) AND pin_hash = ${pinHash}`
+        if (!rows.length) return json({ error: 'no match for that name and pin' }, 404)
+        ctx.waitUntil(touchPlayer(sql, rows[0].id))
+        return json({ playerId: rows[0].id })
       }
 
       // GET /players/:id/games → history of finished games this player was in
       if (parts[0] === 'players' && req.method === 'GET' && parts[2] === 'games') {
         const playerId = parts[1]
+        // The jsonb `?` operator tests top-level KEYS (seat numbers here,
+        // e.g. "0"/"1"), not values — seat_device_ids' values are the
+        // device ids, so this needs an EXISTS over jsonb_each_text to
+        // actually search by value.
         const rows = await sql`
 					SELECT code, seed, scores, seat_device_ids, seat_colors, winner_seat, final_state, finished_at
 					FROM game_results
-					WHERE seat_device_ids ? ${playerId}
+					WHERE EXISTS (
+						SELECT 1 FROM jsonb_each_text(seat_device_ids) AS kv(seat, device_id)
+						WHERE kv.device_id = ${playerId}
+					)
 					ORDER BY finished_at DESC LIMIT 200`
         // Every device id across every returned game, in one batch, so each
         // row's seats can be labeled with a name without a query per row.

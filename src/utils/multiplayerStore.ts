@@ -14,11 +14,13 @@ import {
   apiGetPlayer,
   apiGetResults,
   apiJoinGame,
+  apiLoginPlayer,
   apiPutPushSub,
   apiPutState,
   apiSetPlayer,
   apiStartGame,
   deviceId,
+  setDeviceId,
   type GameData,
   type GameResults,
   type SavedGameState,
@@ -62,7 +64,10 @@ interface MultiplayerStore {
   disconnect: () => void
   openNameModal: () => void
   closeNameModal: () => void
-  setMyProfile: (name: string, color: TileColorName) => Promise<void>
+  setMyProfile: (name: string, color: TileColorName, pin: string) => Promise<void>
+  // Recover an existing player identity by name + PIN on this device.
+  // Throws (with a server error message) if there's no match.
+  loginAsExisting: (name: string, pin: string) => Promise<void>
 }
 
 // gameStore wires itself into this store once at module load, so it can
@@ -502,9 +507,20 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
   openNameModal: () => set({ showNameModal: true }),
   closeNameModal: () => set({ showNameModal: false }),
 
-  setMyProfile: async (name: string, color: TileColorName) => {
-    await apiSetPlayer(deviceId(), { name, color })
+  setMyProfile: async (name: string, color: TileColorName, pin: string) => {
+    await apiSetPlayer(deviceId(), { name, color, pin })
     set({ myName: name, myColor: color, showNameModal: false })
+  },
+
+  loginAsExisting: async (name: string, pin: string) => {
+    const playerId = await apiLoginPlayer(name, pin)
+    setDeviceId(playerId)
+    const profile = await apiGetPlayer(playerId)
+    set({
+      myName: profile.name,
+      myColor: profile.color,
+      showNameModal: false,
+    })
   },
 }))
 

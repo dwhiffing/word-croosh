@@ -74,12 +74,20 @@ export function deviceId(): string {
   return id
 }
 
+// Overwrite this device's identity with a recovered player id (see
+// apiLoginPlayer) — every subsequent deviceId() call, and thus every
+// request, acts as that player from here on. Does not affect any other
+// device that may still be using the old id.
+export function setDeviceId(id: string): void {
+  localStorage.setItem('word-croosh-device-id', id)
+}
+
 async function request(
   path: string,
   init?: RequestInit,
 ): Promise<{
   status: number
-  data: GameData & { code?: string; error?: string }
+  data: GameData & { code?: string; error?: string; playerId?: string }
 }> {
   const sep = path.includes('?') ? '&' : '?'
   const res = await fetch(`${API_URL}${path}${sep}d=${deviceId()}`, {
@@ -195,7 +203,7 @@ export async function apiGetPlayer(playerId: string): Promise<PlayerProfile> {
 
 export async function apiSetPlayer(
   playerId: string,
-  profile: { name: string; color: TileColorName },
+  profile: { name: string; color: TileColorName; pin: string },
 ): Promise<void> {
   const { status, data } = await request(`/players/${playerId}`, {
     method: 'PUT',
@@ -203,4 +211,22 @@ export async function apiSetPlayer(
   })
   if (status !== 200)
     throw new Error((data as { error?: string }).error ?? `HTTP ${status}`)
+}
+
+// Recover an existing player identity by name + 4-digit PIN (e.g. on a new
+// device). Returns the player's id on a match — the caller is responsible
+// for adopting it as this device's identity (see multiplayerStore.loginAs).
+export async function apiLoginPlayer(
+  name: string,
+  pin: string,
+): Promise<string> {
+  const { status, data } = await request('/players/login', {
+    method: 'POST',
+    body: JSON.stringify({ name, pin }),
+  })
+  if (status !== 200 || !data.playerId)
+    throw new Error(
+      (data as { error?: string }).error ?? `HTTP ${status}`,
+    )
+  return data.playerId as string
 }
