@@ -10,6 +10,7 @@ import {
 import { useGameStore, validatePlay } from '../utils/gameStore'
 import { useMultiplayerStore } from '../utils/multiplayerStore'
 import { Header } from './Header'
+import { LastPlayOutline } from './LastPlayOutline'
 import { MenuDropdown } from './MenuDropdown'
 import { BlankTileModal } from './modals/BlankTileModal'
 import { GameOverModal } from './modals/GameOverModal'
@@ -196,6 +197,7 @@ function App() {
       <div
         id="cards"
         className="fixed inset-0 pointer-events-none overflow-hidden">
+        <LastPlayOutline />
         {Array.from({ length: state.cardCount }).map((_, cardId) => (
           <Tile key={`tile-${cardId}`} cardId={cardId} />
         ))}

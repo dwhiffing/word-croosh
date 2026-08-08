@@ -210,10 +210,20 @@
   .card.face-down .card-back {
     @apply opacity-100;
   }
-  /* tiles from the most recently played word */
-  .card.last-play .tile-front {
-    background: #25b925;
-    color: #fff;
+  /* Border drawn around the whole last-played word (see LastPlayOutline),
+     not per-tile — a single rect spanning the word's tiles. */
+  .last-play-outline {
+    position: absolute;
+    pointer-events: none;
+    outline: 3px solid #fff;
+    border: 1px solid #000;
+    border-radius: calc(var(--base-size) * 0.12);
+    transition:
+      opacity 0.3s,
+      translate 0.3s,
+      width 0.3s,
+      height 0.3s;
+    z-index: 999;
   }
   /* rack tiles marked for exchange while passing */
   .card.swap-selected .tile-front {
