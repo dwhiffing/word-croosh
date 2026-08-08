@@ -203,9 +203,31 @@ export const useGameStore = create<GameStore>((set, get) => {
       startGame(seed, localPlayerIndex),
     restoreMultiplayerGame: (saved, localPlayerIndex) => {
       if (dealTimeout) clearTimeout(dealTimeout)
+      // Rack ordering is local presentation, not shared truth — a snapshot
+      // from the opponent carries a stale copy of our rack order, so keep
+      // the slots we have now for any tile that's in our rack both locally
+      // and in the snapshot (newly drawn tiles sort after, in saved order).
+      const rackPile = RACK_PILE[localPlayerIndex]
+      const localSlot = new Map(
+        get()
+          .cards.filter((c) => c.pileIndex === rackPile)
+          .map((c) => [c.id, c.cardPileIndex]),
+      )
+      const rackOrder = saved.cards
+        .filter((c) => c.pileIndex === rackPile)
+        .sort(
+          (a, b) =>
+            (localSlot.get(a.id) ?? Infinity) -
+              (localSlot.get(b.id) ?? Infinity) ||
+            a.cardPileIndex - b.cardPileIndex,
+        )
+      const cards = saved.cards.map((c) => {
+        const idx = rackOrder.findIndex((t) => t.id === c.id)
+        return idx === -1 ? c : { ...c, cardPileIndex: idx }
+      })
       set({
         ...initializeGameState(),
-        cards: saved.cards,
+        cards,
         localPlayerIndex,
         dealPhase: -1,
         currentPlayerIndex: saved.currentPlayerIndex,
