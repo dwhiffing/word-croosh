@@ -38,9 +38,5 @@ export const Square = ({ pileIndex }: { pileIndex: number }) => {
 
 // A rack container. Tiles position themselves within it (see index.ts).
 export const Rack = ({ pileIndex }: { pileIndex: number }) => (
-  <div
-    className="pile rack"
-    data-pileindex={pileIndex}
-    data-piletype="rack"
-  />
+  <div className="pile rack" data-pileindex={pileIndex} data-piletype="rack" />
 )

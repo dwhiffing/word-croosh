@@ -1,6 +1,6 @@
 import { useShallow } from 'zustand/react/shallow'
-import { useGameStore } from '../utils/gameStore'
-import { useMultiplayerStore } from '../utils/multiplayerStore'
+import { useGameStore } from '../../utils/gameStore'
+import { useMultiplayerStore } from '../../utils/multiplayerStore'
 import { Modal } from './Modal'
 
 export const GameOverModal = () => {

@@ -12,21 +12,3 @@ interface CardType {
   value: number // point value (0 for blanks)
   isBlank: boolean
 }
-
-interface CardShallowState {
-  x: number
-  y: number
-  scale: number
-  rotate: number
-  isActive: boolean
-  isDragging: boolean
-  pileType: string
-  isFaceDown: boolean
-  opacity: number
-  disabled: boolean
-  cardPileIndex: number
-  zIndex: number
-  letter: string
-  value: number
-  transitionDelay: number
-}

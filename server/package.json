@@ -1,8 +1,8 @@
 {
-	"name": "word-croosh-api",
-	"private": true,
-	"type": "module",
-	"dependencies": {
-		"@neondatabase/serverless": "^1.0.0"
-	}
+  "name": "word-croosh-api",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.0"
+  }
 }

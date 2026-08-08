@@ -9,7 +9,12 @@ export function loadDictionary(): Promise<void> {
   loading = fetch(`${import.meta.env.BASE_URL}words.txt`)
     .then((r) => r.text())
     .then((text) => {
-      words = new Set(text.split('\n').map((w) => w.trim()).filter(Boolean))
+      words = new Set(
+        text
+          .split('\n')
+          .map((w) => w.trim())
+          .filter(Boolean),
+      )
     })
     .catch(() => {
       // If the list fails to load, fall back to accepting all words.

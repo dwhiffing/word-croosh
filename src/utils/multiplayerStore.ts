@@ -4,9 +4,7 @@
 // thin reconciler around it. After every settled local change the snapshot
 // is uploaded (optimistic version check); a poll loop (paused while the tab
 // is hidden) fetches the row and adopts the server state whenever it has
-// seen more moves than we have. That one rule covers opponent moves,
-// reloads, backgrounding, conflicts — everything the old P2P layer needed
-// bespoke machinery for.
+// seen more moves than we have.
 
 import { create } from "zustand";
 import {
@@ -18,59 +16,15 @@ import {
 	type GameData,
 	type SavedGameState,
 } from "./api";
+import { pushNetworkDebug } from "./networkDebug";
 import { clearTurnNotifications, enablePush, initPush } from "./push";
+import { clearUrlParams, setUrlParam } from ".";
 
 export type { SavedGameState } from "./api";
 
-const DEBUG_KEY = "word-croosh-network-debug-visible";
-const LAST_GAME_KEY = "word-croosh-last-game";
-const POLL_MS = 3500;
+type LobbyPhase = "hosting" | "joining" | "connecting";
 
-export type LastGame = { code: string; role: 0 | 1 };
-
-function loadLastGame(): LastGame | null {
-	try {
-		const raw = localStorage.getItem(LAST_GAME_KEY);
-		return raw ? (JSON.parse(raw) as LastGame) : null;
-	} catch {
-		return null;
-	}
-}
-
-function saveLastGame(code: string, role: 0 | 1) {
-	const lastGame: LastGame = { code: code.toUpperCase(), role };
-	localStorage.setItem(LAST_GAME_KEY, JSON.stringify(lastGame));
-	useMultiplayerStore.setState({ lastGame });
-}
-
-function clearLastGame() {
-	localStorage.removeItem(LAST_GAME_KEY);
-	useMultiplayerStore.setState({ lastGame: null });
-}
-
-function getDebugPanelInitialState(): boolean {
-	return localStorage.getItem(DEBUG_KEY) === "1";
-}
-
-const MAX_DEBUG_LINES = 50;
-let networkDebugSink: ((line: string) => void) | null = null;
-
-function pushNetworkDebug(line: string) {
-	networkDebugSink?.(`[${new Date().toLocaleTimeString()}] ${line}`);
-}
-
-export type TilePlacement = { tileId: number; pile: number; letter: string };
-
-// Kept for the game store's sendMove call sites; moves now travel to the
-// opponent as full state snapshots rather than as messages.
-export type MoveData =
-	| { type: "commit"; placements: TilePlacement[] }
-	| { type: "pass" }
-	| { type: "swap"; tileIds: number[] };
-
-export type LobbyPhase = "hosting" | "joining" | "connecting";
-
-export interface MultiplayerState {
+interface MultiplayerStore {
 	mode: "ai" | "multiplayer";
 	showLobbyModal: boolean;
 	lobbyPhase: LobbyPhase;
@@ -82,11 +36,6 @@ export interface MultiplayerState {
 	lastWinnerIndex: 0 | 1 | null;
 	lastGame: LastGame | null; // most recent game, for the reconnect option
 	notificationsEnabled: boolean;
-	showNetworkDebug: boolean;
-	networkDebugLines: string[];
-}
-
-interface MultiplayerStore extends MultiplayerState {
 	openLobby: (phase: Exclude<LobbyPhase, "connecting">) => void;
 	closeLobby: () => void;
 	hostGame: (code?: string) => void;
@@ -94,49 +43,23 @@ interface MultiplayerStore extends MultiplayerState {
 	startNewGame: () => void;
 	reconnectLastGame: () => void;
 	recordResult: (winnerIndex: 0 | 1) => void;
-	sendMove: (move: MoveData) => void;
 	enableNotifications: () => Promise<void>;
 	disconnect: () => void;
-	toggleNetworkDebug: () => void;
 }
 
-// Callbacks wired up by gameStore after both stores are created
-let onGameStartCallback:
-	| ((seed: number, localPlayerIndex: 0 | 1) => void)
-	| null = null;
-let onGameResumeCallback:
-	| ((state: SavedGameState, localPlayerIndex: 0 | 1) => void)
-	| null = null;
-let onDisconnectCallback: (() => void) | null = null;
-let onHostReadyToStartCallback: (() => void) | null = null;
-let onRemoteMoveCallback: ((move: MoveData) => void) | null = null;
-
-export const setOnGameStart = (
-	fn: (seed: number, localPlayerIndex: 0 | 1) => void,
-) => {
-	onGameStartCallback = fn;
-};
-export const setOnGameResume = (
-	fn: (state: SavedGameState, localPlayerIndex: 0 | 1) => void,
-) => {
-	onGameResumeCallback = fn;
-};
-export const setOnDisconnect = (fn: () => void) => {
-	onDisconnectCallback = fn;
-};
-export const setOnHostReadyToStart = (fn: () => void) => {
-	onHostReadyToStartCallback = fn;
-};
-export const setOnRemoteMove = (fn: (move: MoveData) => void) => {
-	onRemoteMoveCallback = fn;
-	void onRemoteMoveCallback; // moves arrive as snapshots now
-};
-
-// Provides a sanitized snapshot of the live game (null when no game is
-// running); wired up by gameStore.
-let gameSnapshotProvider: (() => SavedGameState | null) | null = null;
-export const setGameSnapshotProvider = (fn: () => SavedGameState | null) => {
-	gameSnapshotProvider = fn;
+// gameStore wires itself into this store once at module load, so it can
+// react to server-driven events (a deal, a resync, a disconnect, the host's
+// "go ahead and deal" signal) and supply the snapshot this store uploads.
+interface GameHooks {
+	onGameStart: (seed: number, localPlayerIndex: 0 | 1) => void;
+	onGameResume: (state: SavedGameState, localPlayerIndex: 0 | 1) => void;
+	onDisconnect: () => void;
+	onHostReadyToStart: () => void;
+	gameSnapshot: () => SavedGameState | null;
+}
+let gameHooks: GameHooks | null = null;
+export const setGameHooks = (hooks: GameHooks) => {
+	gameHooks = hooks;
 };
 
 // ── Sync engine ─────────────────────────────────────────────────────
@@ -147,6 +70,7 @@ let lastUploadedCount = -1;
 let uploading = false;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
+const POLL_MS = 10000;
 function startPolling() {
 	if (pollTimer) return;
 	pollTimer = setInterval(() => void pollTick(), POLL_MS);
@@ -180,8 +104,11 @@ async function pollTick(force = false) {
 }
 
 // Compare the server row with local state and converge on whichever has
-// seen more of the game.
-function reconcile(data: GameData) {
+// seen more of the game. `forceAdopt` is set when we already know our
+// local write lost a version race (a CAS conflict) — in that case the
+// server is authoritative even if both sides happen to be at the same
+// moveCount (e.g. both players ended the game independently at once).
+function reconcile(data: GameData, forceAdopt = false) {
 	const store = useMultiplayerStore;
 	const s = store.getState();
 
@@ -209,7 +136,7 @@ function reconcile(data: GameData) {
 			showLobbyModal: false,
 		});
 		pushNetworkDebug("Opponent joined — starting game");
-		onHostReadyToStartCallback?.();
+		gameHooks?.onHostReadyToStart();
 		return;
 	}
 	if (!data.state) return;
@@ -224,7 +151,7 @@ function reconcile(data: GameData) {
 		lastWinnerIndex: state.lastWinnerIndex ?? s.lastWinnerIndex,
 	});
 
-	const localCount = gameSnapshotProvider?.()?.moveCount ?? -1;
+	const localCount = gameHooks?.gameSnapshot()?.moveCount ?? -1;
 	const serverCount = state.moveCount ?? 0;
 
 	// A deal we haven't started locally (initial game or rematch): play the
@@ -238,17 +165,17 @@ function reconcile(data: GameData) {
 		currentSeed = data.seed;
 		lastUploadedCount = 0;
 		pushNetworkDebug("New game from server");
-		onGameStartCallback?.(data.seed, localPlayerIndex);
+		gameHooks?.onGameStart(data.seed, localPlayerIndex);
 		return;
 	}
 
-	if (serverCount > localCount || seatCorrected) {
+	if (serverCount > localCount || seatCorrected || forceAdopt) {
 		pushNetworkDebug(
 			`Adopting server state (moves ${localCount} → ${serverCount})`,
 		);
 		currentSeed = data.seed ?? currentSeed;
 		lastUploadedCount = serverCount;
-		onGameResumeCallback?.(state, localPlayerIndex);
+		gameHooks?.onGameResume(state, localPlayerIndex);
 	} else if (localCount > serverCount) {
 		void uploadState(); // we're ahead — e.g. an earlier upload failed
 	}
@@ -257,7 +184,7 @@ function reconcile(data: GameData) {
 // Upload the local snapshot when it has advanced past what we've written.
 async function uploadState(force = false) {
 	const s = useMultiplayerStore.getState();
-	const snap = gameSnapshotProvider?.();
+	const snap = gameHooks?.gameSnapshot();
 	if (!s.gameCode || !snap || s.mode !== "multiplayer") return;
 	if (!force && (snap.moveCount ?? 0) <= lastUploadedCount) return;
 	if (uploading) return;
@@ -274,10 +201,11 @@ async function uploadState(force = false) {
 		});
 		serverVersion = res.version;
 		if (res.conflict) {
-			// Someone else wrote first — their row is the truth now.
+			// Someone else wrote first — their row is the truth now, even if
+			// it happens to be at the same moveCount as our rejected write.
 			pushNetworkDebug("Write conflict — adopting server state");
 			uploading = false;
-			reconcile(res);
+			reconcile(res, true);
 			return;
 		}
 		lastUploadedCount = snap.moveCount ?? 0;
@@ -318,22 +246,6 @@ function registerOwnPushSubscription(sub: PushSubscriptionJSON) {
 	sendPushSubIfAny();
 }
 
-// ── URL params (auto-reconnect after reload) ────────────────────────
-function setUrlParam(key: string, value: string) {
-	const url = new URL(window.location.href);
-	url.searchParams.delete("host");
-	url.searchParams.delete("join");
-	url.searchParams.set(key, value);
-	history.replaceState(null, "", url.toString());
-}
-
-function clearUrlParams() {
-	const url = new URL(window.location.href);
-	url.searchParams.delete("host");
-	url.searchParams.delete("join");
-	history.replaceState(null, "", url.toString());
-}
-
 // ── Store ───────────────────────────────────────────────────────────
 export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 	mode: "ai",
@@ -347,8 +259,6 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 	lastWinnerIndex: null,
 	lastGame: loadLastGame(),
 	notificationsEnabled: false,
-	showNetworkDebug: getDebugPanelInitialState(),
-	networkDebugLines: [],
 
 	openLobby: (phase) =>
 		set({ showLobbyModal: true, lobbyPhase: phase, error: null }),
@@ -409,10 +319,7 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 			const data = await apiJoinGame(code);
 			if (!data) {
 				if (get().lastGame?.code === code.toUpperCase()) clearLastGame();
-				set({
-					error: "Could not find that game. Check the code.",
-					lobbyPhase: "joining",
-				});
+				set({ error: "Could not find that game", lobbyPhase: "joining" });
 				return;
 			}
 			serverVersion = data.version;
@@ -455,7 +362,7 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 		const seed = Date.now();
 		currentSeed = seed;
 		lastUploadedCount = -1;
-		onGameStartCallback?.(seed, 0); // host is always player 0
+		gameHooks?.onGameStart(seed, 0); // host is always player 0
 		void uploadState(true);
 	},
 
@@ -467,12 +374,6 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 		});
 		// make sure the final state (with updated wins) reaches the server
 		void uploadState(true);
-	},
-
-	sendMove: (move: MoveData) => {
-		// Moves reach the opponent as state snapshots uploaded from the game
-		// store's subscriber (saveGameState); kept for its call sites.
-		void move;
 	},
 
 	enableNotifications: async () => {
@@ -502,28 +403,9 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 			wins: [0, 0],
 			lastWinnerIndex: null,
 		});
-		onDisconnectCallback?.();
+		gameHooks?.onDisconnect();
 	},
-
-	toggleNetworkDebug: () =>
-		set((s) => {
-			localStorage.setItem(DEBUG_KEY, !s.showNetworkDebug ? "1" : "0");
-			return { showNetworkDebug: !s.showNetworkDebug };
-		}),
 }));
-
-networkDebugSink = (line) => {
-	useMultiplayerStore.setState((s) => ({
-		networkDebugLines: [...s.networkDebugLines, line].slice(-MAX_DEBUG_LINES),
-	}));
-};
-
-// Force an immediate server check. Runs on foreground resume and via the
-// manual 🔄 button.
-export function resyncNow() {
-	pushNetworkDebug("Manual/resume sync");
-	void pollTick(true);
-}
 
 document.addEventListener("visibilitychange", () => {
 	if (document.visibilityState !== "visible") return;
@@ -553,4 +435,27 @@ export function autoConnect() {
 		useMultiplayerStore.getState().openLobby("joining");
 		useMultiplayerStore.getState().joinGame(joinCode);
 	}
+}
+
+const LAST_GAME_KEY = "word-croosh-last-game";
+type LastGame = { code: string; role: 0 | 1 };
+
+function loadLastGame(): LastGame | null {
+	try {
+		const raw = localStorage.getItem(LAST_GAME_KEY);
+		return raw ? (JSON.parse(raw) as LastGame) : null;
+	} catch {
+		return null;
+	}
+}
+
+function saveLastGame(code: string, role: 0 | 1) {
+	const lastGame: LastGame = { code: code.toUpperCase(), role };
+	localStorage.setItem(LAST_GAME_KEY, JSON.stringify(lastGame));
+	useMultiplayerStore.setState({ lastGame });
+}
+
+function clearLastGame() {
+	localStorage.removeItem(LAST_GAME_KEY);
+	useMultiplayerStore.setState({ lastGame: null });
 }

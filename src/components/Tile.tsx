@@ -1,12 +1,7 @@
 import debounce from 'lodash/debounce'
 import { memo, useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import {
-  getCardPilePosition,
-  getPileSize,
-  useForceUpdate,
-  useWindowEvent,
-} from '../utils'
+import { getCardPilePosition, useForceUpdate, useWindowEvent } from '../utils'
 import { CARD_TRANSITION_DURATION, RACK_PILE } from '../utils/constants'
 import { type GameState, useGameStore } from '../utils/gameStore'
 
@@ -45,7 +40,6 @@ const Tile = ({ cardId }: { cardId: number }) => {
         transitionProperty: 'translate, scale, opacity',
         transitionDuration: `${dur}ms`,
         transitionTimingFunction: 'cubic-bezier(0.4, 0, 0.6, 1)',
-        transitionDelay: `${store.transitionDelay}ms`,
         translate,
         willChange: 'transform',
         opacity: store.opacity,
@@ -77,22 +71,17 @@ const getShallowTileState =
       pileType,
       scale: pileScale,
     } = getCardPilePosition(card)
-    const { width, height } = getPileSize()
 
     const isActive = cardId === state.activeCard?.id
-    const isShuffling = state.dealPhase === 0
     const isInBag = pileIndex === 0
     const ownRack = RACK_PILE[state.localPlayerIndex]
     const oppRack = RACK_PILE[state.localPlayerIndex === 0 ? 1 : 0]
     // hide identities of bag tiles and the opponent's rack tiles
-    const isFaceDown = isInBag || pileIndex === oppRack || isShuffling
+    const isFaceDown = isInBag || pileIndex === oppRack
     const isDragging = isActive && pressed
 
-    const bagX = window.innerWidth / 2 - width / 2
-    const bagY = window.innerHeight / 2 - height / 2
-
-    const x = isShuffling ? bagX : isDragging ? mouseX : xPos
-    const y = isShuffling ? bagY : isDragging ? mouseY : yPos
+    const x = isDragging ? mouseX : xPos
+    const y = isDragging ? mouseY : yPos
 
     const isLastPlay = state.lastPlay?.tileIds.includes(cardId) ?? false
     const isSwapSelected = state.swapMode && state.swapIds.includes(cardId)
@@ -120,8 +109,6 @@ const getShallowTileState =
       letter,
       value,
       isBlank,
-      transitionDelay:
-        state.dealPhase === 1 ? (cardId % 14) * (CARD_TRANSITION_DURATION / 20) : 0,
     }
   }
 
@@ -141,7 +128,6 @@ type TileShallowState = {
   letter: string
   value: number
   isBlank: boolean
-  transitionDelay: number
 }
 
 export default memo(Tile)

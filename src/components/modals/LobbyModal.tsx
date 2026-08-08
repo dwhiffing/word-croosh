@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMultiplayerStore } from '../utils/multiplayerStore'
+import { useMultiplayerStore } from '../../utils/multiplayerStore'
 import { Modal } from './Modal'
 
 function getGameCode(): string {
