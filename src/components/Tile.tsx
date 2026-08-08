@@ -6,6 +6,7 @@ import {
   CARD_TRANSITION_DURATION,
   RACK_PILE,
   TILE_COLOR_HEX,
+  TILE_COLOR_TEXT_HEX,
 } from '../utils/constants'
 import { type GameState, useGameStore } from '../utils/gameStore'
 import { useMultiplayerStore } from '../utils/multiplayerStore'
@@ -59,7 +60,7 @@ const Tile = ({ cardId }: { cardId: number }) => {
           ownerColor
             ? {
                 background: TILE_COLOR_HEX[ownerColor],
-                color: '#000',
+                color: TILE_COLOR_TEXT_HEX[ownerColor],
               }
             : undefined
         }>

@@ -10,7 +10,7 @@
   --color-tile: #e9c893;
   --color-tile-text: #4a2f10;
   --color-board: #cfe3d6;
-  --color-square: #2f7d5b;
+  --color-square: #2f7d5bcc;
   --color-square-border: #24634a;
   --color-overlay: rgb(0 0 0 / 0.27);
   --color-backdrop: rgb(0 0 0 / 0.4);
@@ -104,34 +104,29 @@
     aspect-ratio: 1;
     background: var(--color-square);
     position: relative;
-    /* matches .card's radius so a bonus square's color doesn't peek out
-       past the corners of the (rounded) tile sitting on top of it */
-    border-radius: calc(var(--base-size) * 0.12);
+    border-radius: calc(var(--base-size) * 0.1);
   }
+
   .pile.square.bonus-TW {
-    background: #e05a4c;
+    background: #e05a4c55;
   }
   .pile.square.bonus-DW {
-    background: #e59aa0;
+    background: #e59aa055;
   }
   .pile.square.bonus-TL {
-    background: #3b7fb0;
+    background: #3b7fb055;
   }
   .pile.square.bonus-DL {
-    background: #a9d0e6;
+    background: #a9d0e655;
   }
   .pile.square.center {
-    background: #e59aa0;
+    background: #e59aa055;
   }
   .square-label {
-    font-size: calc(var(--base-size) * 0.6);
-    font-weight: 800;
-    color: rgba(255, 255, 255, 0.85);
+    font-size: calc(var(--base-size) * 0.45);
+    font-weight: 700;
+    color: rgba(0, 0, 0, 0.35);
     pointer-events: none;
-  }
-  .pile.square.bonus-DL .square-label,
-  .pile.square.bonus-TL .square-label {
-    color: rgba(0, 0, 0, 0.55);
   }
   .square-star {
     font-size: calc(var(--base-size) * 0.55);
@@ -183,7 +178,7 @@
     aspect-ratio: 1;
     position: absolute;
     pointer-events: none;
-    border-radius: calc(var(--base-size) * 0.12);
+    border-radius: calc(var(--base-size) * 0.1);
   }
   /* Inactive tiles get a hit area so they can be picked up; the tile being
      dragged (.active) has none, so elementFromPoint sees the square beneath. */
@@ -195,7 +190,7 @@
   }
   .card .card-front,
   .card .card-back {
-    border-radius: calc(var(--base-size) * 0.12);
+    border-radius: calc(var(--base-size) * 0.1);
   }
   .card .tile-front {
     @apply flex justify-center items-center h-full w-full relative;
@@ -219,9 +214,9 @@
   .last-play-outline {
     position: absolute;
     pointer-events: none;
-    outline: 3px solid #fff;
-    border: 1px solid #000;
-    border-radius: calc(var(--base-size) * 0.12);
+    outline: calc(var(--base-size) * 0.075) solid #fff;
+    border: calc(var(--base-size) * 0.03) solid #000;
+    border-radius: calc(var(--base-size) * 0.1);
     transition:
       opacity 0.3s,
       translate 0.3s,

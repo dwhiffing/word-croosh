@@ -177,6 +177,7 @@ function App() {
                           className="self-stretch w-12"
                           triggerClassName="w-full h-full"
                           openUp
+                          variant="in-game"
                         />
                       </>
                     )}

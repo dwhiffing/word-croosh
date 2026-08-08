@@ -93,9 +93,12 @@ export function Dropdown({
         createPortal(
           <div
             className={cn(
-              'fixed inset-0 z-modal flex items-center justify-center transition-opacity duration-300 bg-backdrop',
+              'fixed inset-0 flex items-center justify-center transition-opacity duration-300 bg-backdrop',
               open ? 'opacity-100' : 'opacity-0 pointer-events-none',
             )}
+            // Above a dragged tile's z-index (99999, see Tile.tsx) — z-modal
+            // alone (10000) isn't high enough to guarantee that.
+            style={{ zIndex: 100000 }}
             onClick={() => setOpen(false)}>
             <div
               className="bg-surface rounded shadow-lg overflow-hidden min-w-[80vw] text-lg"
@@ -111,7 +114,10 @@ export function Dropdown({
             'absolute right-0 bg-on-surface rounded shadow-lg min-w-full overflow-hidden transition-opacity duration-300',
             openUp ? 'bottom-full mb-2' : 'top-full mt-2',
             open ? 'opacity-100' : 'opacity-0 pointer-events-none',
-          )}>
+          )}
+          // Above a dragged tile's z-index (99999, see Tile.tsx) so the menu
+          // never renders underneath the tile layer.
+          style={{ zIndex: 100000 }}>
           {menuItems}
         </div>
       )}

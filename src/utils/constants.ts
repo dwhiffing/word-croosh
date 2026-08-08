@@ -41,21 +41,27 @@ export const TILE_COLORS: TileColorName[] = [
 ]
 
 export const TILE_COLOR_HEX: Record<TileColorName, string> = {
-  yellow: '#e9c893', // the original default tile color
+  yellow: '#e7da82', // the original default tile color
   orange: '#e8a869',
-  pink: '#e6a8c4',
-  purple: '#c9a8e0',
-  blue: '#a3c6e8',
-  teal: '#9ed4c9',
-  green: '#b3d98a',
-  gray: '#c9c9c9',
+  pink: '#efa2bd',
+  purple: '#b680dc',
+  blue: '#7a8fe1',
+  teal: '#80cfbf',
+  green: '#6ed365',
+  gray: '#bdbad1',
 }
 
-export const BONUS_COLORS: Record<NonNullable<Bonus>, string> = {
-  TW: '#e05a4c',
-  DW: '#e59aa0',
-  TL: '#3b7fb0',
-  DL: '#a9d0e6',
+// Tile letter/value text color: a darker shade of the tile's own hue
+// (rather than flat black) for each color, still readable at tile scale.
+export const TILE_COLOR_TEXT_HEX: Record<TileColorName, string> = {
+  yellow: '#4a2f10', // the original default tile-text color
+  orange: '#714a28',
+  pink: '#763756',
+  purple: '#522f70',
+  blue: '#28335e',
+  teal: '#246156',
+  green: '#285823',
+  gray: '#4d4b5a',
 }
 
 export const BONUS_LABELS: Record<NonNullable<Bonus>, string> = {

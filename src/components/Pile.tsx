@@ -1,3 +1,4 @@
+import { tileOnSquare } from '../utils/bag'
 import { CENTER_SQUARE, getBonus } from '../utils/constants'
 import { useGameStore } from '../utils/gameStore'
 
@@ -14,13 +15,16 @@ export const Square = ({ pileIndex }: { pileIndex: number }) => {
   const selectedDir = useGameStore((s) =>
     s.selectedSquare === pileIndex ? s.selectedDir : null,
   )
+  const isOccupied = useGameStore((s) => !!tileOnSquare(pileIndex, s.cards))
   const bonus = getBonus(pileIndex)
   const isCenter = pileIndex === CENTER_SQUARE
   return (
     <div
       className={`pile square ${bonus ? `bonus-${bonus}` : ''} ${
         isCenter ? 'center' : ''
-      } ${selectedDir ? 'selected' : ''} flex justify-center items-center`}
+      } ${selectedDir ? 'selected' : ''} ${
+        isOccupied ? 'occupied' : ''
+      } flex justify-center items-center`}
       data-pileindex={pileIndex}
       data-piletype="board">
       {selectedDir ? (
