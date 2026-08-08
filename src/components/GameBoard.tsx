@@ -125,26 +125,18 @@ function App() {
 									<div className="controls">
 										{myTurn && state.swapMode && (
 											<>
-												<button
-													className="button px-6 py-4"
-													onClick={state.confirmSwap}
-												>
+												<button onClick={state.confirmSwap}>
 													{state.swapCount > 0
 														? `Swap ${state.swapCount}`
 														: "Pass"}
 												</button>
-												<button
-													className="button px-6 py-4"
-													onClick={state.cancelSwap}
-												>
-													Cancel
-												</button>
+												<button onClick={state.cancelSwap}>Cancel</button>
+												<button onClick={state.giveUp}>Give Up</button>
 											</>
 										)}
 										{myTurn && !state.swapMode && (
 											<>
 												<button
-													className="button px-6 py-4"
 													onClick={state.submitTurn}
 													disabled={!state.canSubmit}
 												>
@@ -153,24 +145,15 @@ function App() {
 														` (${state.pendingScore})`}
 												</button>
 												<button
-													className="button px-6 py-4"
 													onClick={state.recallTiles}
 													disabled={state.pending.length === 0}
 												>
 													Recall
 												</button>
 												{state.pending.length > 0 ? (
-													<button
-														className="button px-6 py-4"
-														onClick={state.undoLastTile}
-													>
-														Back
-													</button>
+													<button onClick={state.undoLastTile}>Back</button>
 												) : (
-													<button
-														className="button px-6 py-4"
-														onClick={state.startPass}
-													>
+													<button onClick={state.startPass}>
 														{state.canSwap ? "Swap" : "Pass"}
 													</button>
 												)}
@@ -178,10 +161,7 @@ function App() {
 										)}
 										{!state.swapMode && (
 											<>
-												<button
-													className="button px-6 py-4"
-													onClick={state.shuffleRack}
-												>
+												<button className="button" onClick={state.shuffleRack}>
 													Shuffle
 												</button>
 												<MenuDropdown

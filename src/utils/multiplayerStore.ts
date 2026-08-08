@@ -98,7 +98,6 @@ interface MultiplayerStore extends MultiplayerState {
 	enableNotifications: () => Promise<void>;
 	disconnect: () => void;
 	toggleNetworkDebug: () => void;
-	checkNetworkPath: () => void;
 }
 
 // Callbacks wired up by gameStore after both stores are created
@@ -166,8 +165,7 @@ async function pollTick(force = false) {
 	try {
 		const data = await apiGetGame(s.gameCode, serverVersion);
 		if (!data) return; // game row is gone (expired)
-		if (s.reconnecting)
-			useMultiplayerStore.setState({ reconnecting: false });
+		if (s.reconnecting) useMultiplayerStore.setState({ reconnecting: false });
 		if (data.changed === false) {
 			// nothing new server-side; retry a failed upload if we're ahead
 			void uploadState();
@@ -245,7 +243,9 @@ function reconcile(data: GameData) {
 	}
 
 	if (serverCount > localCount || seatCorrected) {
-		pushNetworkDebug(`Adopting server state (moves ${localCount} → ${serverCount})`);
+		pushNetworkDebug(
+			`Adopting server state (moves ${localCount} → ${serverCount})`,
+		);
 		currentSeed = data.seed ?? currentSeed;
 		lastUploadedCount = serverCount;
 		onGameResumeCallback?.(state, localPlayerIndex);
@@ -417,7 +417,11 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 			}
 			serverVersion = data.version;
 			if (data.you != null) localPlayerIndex = data.you;
-			set({ gameCode: code.toUpperCase(), wins: [0, 0], lastWinnerIndex: null });
+			set({
+				gameCode: code.toUpperCase(),
+				wins: [0, 0],
+				lastWinnerIndex: null,
+			});
 			setUrlParam("join", code.toUpperCase());
 			saveLastGame(code, localPlayerIndex);
 			pushNetworkDebug(`Joined game ${code.toUpperCase()}`);
@@ -506,21 +510,6 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 			localStorage.setItem(DEBUG_KEY, !s.showNetworkDebug ? "1" : "0");
 			return { showNetworkDebug: !s.showNetworkDebug };
 		}),
-
-	checkNetworkPath: async () => {
-		const { gameCode } = get();
-		if (!gameCode) return pushNetworkDebug("No active game to check");
-		try {
-			const data = await apiGetGame(gameCode, -1);
-			pushNetworkDebug(
-				data
-					? `Server OK — game v${data.version}, ${data.state?.moveCount ?? 0} moves`
-					: "Server OK — game not found",
-			);
-		} catch (e) {
-			pushNetworkDebug(`Server unreachable: ${(e as Error).message}`);
-		}
-	},
 }));
 
 networkDebugSink = (line) => {

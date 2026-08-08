@@ -82,7 +82,7 @@
     padding-left: 24px;
   }
 
-  .button {
+  .button, .controls button {
     @apply flex justify-center items-center px-2 py-1 min-w-10 rounded bg-on-surface hover:bg-on-surface-active transition-colors font-bold cursor-pointer disabled:opacity-40 disabled:cursor-default;
   }
 
@@ -255,6 +255,9 @@
   }
   .controls {
     display: flex;
-    gap: 0.5rem;
+    gap: 0.34rem;
+    button {
+      @apply px-4 py-3;
+    }
   }
 }
