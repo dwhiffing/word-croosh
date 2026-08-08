@@ -96,6 +96,7 @@
     padding: 0px;
     background: var(--color-square-border);
     border: 2px solid var(--color-on-surface-active);
+    border-radius: calc(var(--base-size) * 0.13);
   }
 
   .pile.square {
@@ -103,6 +104,9 @@
     aspect-ratio: 1;
     background: var(--color-square);
     position: relative;
+    /* matches .card's radius so a bonus square's color doesn't peek out
+       past the corners of the (rounded) tile sitting on top of it */
+    border-radius: calc(var(--base-size) * 0.12);
   }
   .pile.square.bonus-TW {
     background: #e05a4c;
