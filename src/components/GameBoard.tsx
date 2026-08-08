@@ -73,6 +73,8 @@ function App() {
 	const myTurn = state.currentPlayerIndex === lp && !state.gameOver;
 	const started = state.cardCount > 0;
 	const ownRack = RACK_PILE[lp];
+	const lastPlay =
+		state.lastPlay && `${state.lastPlay.word} (${state.lastPlay.score}) - `;
 
 	return (
 		<div className="bg-surface absolute inset-0">
@@ -89,32 +91,21 @@ function App() {
 								</span>
 								<span>/</span>
 								<span className={!myTurn ? "active-player" : ""}>
-									Opponent: {state.scores[lp === 0 ? 1 : 0]}
+									Them: {state.scores[lp === 0 ? 1 : 0]}
 								</span>
 							</div>
 							{!state.gameOver && (
 								<div className="turn-row">
-									{state.swapMode ? (
-										state.canSwap ? (
-											"Tap tiles to swap, then confirm"
-										) : (
-											"Pass your turn?"
-										)
-									) : state.givenUpBy === lp ? (
-										"You gave up - opponent is finishing the game"
-									) : state.givenUpBy != null ? (
-										<>
-											{state.lastPlay &&
-												`${state.lastPlay.word} (${state.lastPlay.score}) - `}
-											Opponent gave up - you are finishing the game
-										</>
-									) : (
-										<>
-											{state.lastPlay &&
-												`${state.lastPlay.word} (${state.lastPlay.score}) - `}
-											{myTurn ? "Your turn!" : "Opponent's turn!"}
-										</>
-									)}
+									<>
+										<b>{lastPlay}</b>
+										{state.givenUpBy === lp
+											? "You gave up, their turn!"
+											: state.givenUpBy != null
+												? "They gave up, your turn!"
+												: myTurn
+													? "Your turn!"
+													: "Their turn!"}
+									</>
 								</div>
 							)}
 						</div>
