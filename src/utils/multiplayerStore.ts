@@ -70,10 +70,27 @@ let lastUploadedCount = -1
 let uploading = false
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-const POLL_MS = 3500
+const POLL_MS = 5000
+// While waiting for the opponent to join or for the host to deal, there's
+// no push notification to wake either side up — polling is the only signal.
+// Poll faster during that short window so "waiting for opponent" doesn't
+// stack two full POLL_MS delays end to end (host notices the join, then the
+// guest notices the deal).
+const LOBBY_POLL_MS = 1500
+let dealPending = false
+
 function startPolling() {
-  if (pollTimer) return
-  pollTimer = setInterval(() => void pollTick(), POLL_MS)
+  if (pollTimer) clearInterval(pollTimer)
+  pollTimer = setInterval(
+    () => void pollTick(),
+    dealPending ? LOBBY_POLL_MS : POLL_MS,
+  )
+}
+
+// Call after `dealPending` changes so the running timer picks up the new
+// interval immediately instead of waiting out whatever's left of the old one.
+function restartPollingIfActive() {
+  if (pollTimer) startPolling()
 }
 
 function stopPolling() {
@@ -136,6 +153,8 @@ function reconcile(data: GameData, forceAdopt = false) {
       showLobbyModal: false,
     })
     pushNetworkDebug('Opponent joined — starting game')
+    dealPending = false
+    restartPollingIfActive()
     gameHooks?.onHostReadyToStart()
     return
   }
@@ -164,6 +183,8 @@ function reconcile(data: GameData, forceAdopt = false) {
     currentSeed = data.seed
     lastUploadedCount = 0
     pushNetworkDebug('New game from server')
+    dealPending = false
+    restartPollingIfActive()
     gameHooks?.onGameStart(data.seed, localPlayerIndex)
     return
   }
@@ -174,6 +195,8 @@ function reconcile(data: GameData, forceAdopt = false) {
     )
     currentSeed = data.seed ?? currentSeed
     lastUploadedCount = serverCount
+    dealPending = false
+    restartPollingIfActive()
     gameHooks?.onGameResume(state, localPlayerIndex)
   } else if (localCount > serverCount) {
     void uploadState() // we're ahead — e.g. an earlier upload failed
@@ -313,6 +336,7 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
       setUrlParam('host', created.code)
       saveLastGame(created.code, 0)
       pushNetworkDebug(`Hosting game ${created.code}`)
+      dealPending = true // poll fast until the guest joins and we can deal
       startPolling()
       sendPushSubIfAny()
     } catch (e) {
@@ -339,7 +363,8 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
       pushNetworkDebug(`Joined game ${code.toUpperCase()}`)
       void fetchResults(code.toUpperCase())
       // If the host has dealt, this starts/restores the game; otherwise
-      // we stay in the connecting lobby until the poll sees the deal.
+      // we stay in the connecting lobby, polling fast, until it sees the deal.
+      dealPending = true
       reconcile(data)
       startPolling()
       sendPushSubIfAny()
