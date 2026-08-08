@@ -19,6 +19,8 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Content-Type',
 }
 
+const MAX_PLAYERS = 4
+
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
     status,
@@ -38,19 +40,16 @@ async function ensureSchema(sql) {
 			code TEXT PRIMARY KEY,
 			version INT NOT NULL DEFAULT 1,
 			seed DOUBLE PRECISION,
-			guest_joined BOOLEAN NOT NULL DEFAULT FALSE,
 			state JSONB,
 			push_subs JSONB NOT NULL DEFAULT '{}',
-			host_id TEXT,
-			guest_id TEXT,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`
-  await sql`ALTER TABLE games ADD COLUMN IF NOT EXISTS host_color TEXT`
-  await sql`ALTER TABLE games ADD COLUMN IF NOT EXISTS guest_color TEXT`
+  await sql`ALTER TABLE games ADD COLUMN IF NOT EXISTS max_players INT NOT NULL DEFAULT 2`
+  await sql`ALTER TABLE games ADD COLUMN IF NOT EXISTS started BOOLEAN NOT NULL DEFAULT FALSE`
 
   // One row per device that has ever played — `id` is the client's
-  // persistent device UUID (the same one already used as host_id/guest_id).
+  // persistent device UUID.
   await sql`
 		CREATE TABLE IF NOT EXISTS players (
 			id TEXT PRIMARY KEY,
@@ -59,6 +58,21 @@ async function ensureSchema(sql) {
 		)`
   await sql`ALTER TABLE players ADD COLUMN IF NOT EXISTS name TEXT`
   await sql`ALTER TABLE players ADD COLUMN IF NOT EXISTS color TEXT`
+
+  // One row per seat in a game — replaces the old host_id/guest_id/
+  // host_color/guest_color named-column scheme so a game can have any
+  // number of seats up to MAX_PLAYERS. `seat` is the fixed 0..N-1 turn-order
+  // index assigned when the player joins.
+  await sql`
+		CREATE TABLE IF NOT EXISTS game_players (
+			code TEXT NOT NULL,
+			seat INT NOT NULL,
+			device_id TEXT NOT NULL,
+			color TEXT,
+			joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (code, seat)
+		)`
+  await sql`CREATE INDEX IF NOT EXISTS game_players_device_idx ON game_players (device_id)`
 
   // One row per finished game (a rematch under the same code gets its own
   // row here, unlike `games` which is overwritten in place). Stores the
@@ -69,17 +83,40 @@ async function ensureSchema(sql) {
 			id SERIAL PRIMARY KEY,
 			code TEXT NOT NULL,
 			seed DOUBLE PRECISION,
-			host_id TEXT,
-			guest_id TEXT,
-			host_score INT NOT NULL,
-			guest_score INT NOT NULL,
-			winner_seat INT, -- 0 host, 1 guest, NULL = tie
+			winner_seat INT, -- NULL = tie
 			final_state JSONB,
 			finished_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`
+  // `scores`/`seat_device_ids` replace the old host_score/guest_score/
+  // host_id/guest_id columns — nullable since CREATE TABLE IF NOT EXISTS is
+  // a no-op against an already-existing table, so old rows never get a
+  // value backfilled (and NOT NULL would reject the ALTER on those rows).
+  await sql`ALTER TABLE game_results ADD COLUMN IF NOT EXISTS scores JSONB`
+  await sql`ALTER TABLE game_results ADD COLUMN IF NOT EXISTS seat_device_ids JSONB`
+  // The color each seat actually played with in this specific finished
+  // game — game_players.color can later change (a rematch under the same
+  // code can reassign it), so this is captured at game-end time to stay
+  // historically accurate, unlike a live join of players.color (a
+  // preference that can also change after the fact).
+  await sql`ALTER TABLE game_results ADD COLUMN IF NOT EXISTS seat_colors JSONB`
+  // The old host_score/guest_score columns (from before the seat-based
+  // rewrite) are no longer written to, but their NOT NULL constraints from
+  // the original CREATE TABLE still stand on a pre-existing table — every
+  // insert violated them until these were relaxed, so game_results rows
+  // were silently never created (a swallowed ctx.waitUntil error). Guarded
+  // with a column-existence check since a fresh DB never has these columns.
+  await sql`
+		DO $$ BEGIN
+			IF EXISTS (SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'game_results' AND column_name = 'host_score') THEN
+				ALTER TABLE game_results ALTER COLUMN host_score DROP NOT NULL;
+			END IF;
+			IF EXISTS (SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'game_results' AND column_name = 'guest_score') THEN
+				ALTER TABLE game_results ALTER COLUMN guest_score DROP NOT NULL;
+			END IF;
+		END $$`
   await sql`CREATE INDEX IF NOT EXISTS game_results_code_idx ON game_results (code)`
-  await sql`CREATE INDEX IF NOT EXISTS game_results_host_idx ON game_results (host_id)`
-  await sql`CREATE INDEX IF NOT EXISTS game_results_guest_idx ON game_results (guest_id)`
   schemaReady = true
 }
 
@@ -94,65 +131,66 @@ async function touchPlayer(sql, id) {
 
 // The 8 selectable tile colors, matching src/utils/constants.ts TILE_COLORS.
 // A player's `players.color` is their stored preference; if it collides
-// with their opponent's in a given game, one seat gets reassigned a random
-// different color for that game only (see resolveGameColors) — the stored
-// preference itself never changes from a collision.
+// with another seat's in a given game, the later-joining seat gets
+// reassigned a random different color for that game only (see
+// resolveSeatColor) — the stored preference itself never changes.
 const TILE_COLORS = [
   'yellow', 'orange', 'pink', 'purple', 'blue', 'teal', 'green', 'gray',
 ]
 
-function randomColor(excluding) {
-  const options = TILE_COLORS.filter((c) => c !== excluding)
+function randomColor(excluding = []) {
+  const options = TILE_COLORS.filter((c) => !excluding.includes(c))
   return options[Math.floor(Math.random() * options.length)]
 }
 
-// Resolve the two seats' effective in-game colors from their stored
-// preferences, reassigning the guest's if it collides with the host's.
-function resolveGameColors(hostColor, guestColor) {
-  hostColor ??= randomColor()
-  if (!guestColor || guestColor === hostColor) {
-    guestColor = randomColor(hostColor)
-  }
-  return [hostColor, guestColor]
+// Resolve a joining seat's effective in-game color from their stored
+// preference, avoiding every color already taken by an earlier seat.
+function resolveSeatColor(preferredColor, takenColors) {
+  if (preferredColor && !takenColors.includes(preferredColor))
+    return preferredColor
+  return randomColor(takenColors)
 }
 
 // Rack pile indices, matching src/utils/constants.ts RACK_PILE — the
 // server is the sole authority on final scoring, so this mirrors the
 // client's "sum of leftover tile values" end-of-game deduction exactly.
-const RACK_PILE = [1000, 1001]
+const RACK_PILE = [1000, 1001, 1002, 1003]
 
 function finalScores(state) {
-  const [wordScoreHost, wordScoreGuest] = state.scores ?? [0, 0]
-  const leftover = [0, 0]
+  const scores = [...(state.scores ?? [])]
+  const leftover = scores.map(() => 0)
   for (const c of state.cards ?? []) {
     const seat = RACK_PILE.indexOf(c.pileIndex)
-    if (seat !== -1) leftover[seat] += c.value ?? 0
+    if (seat !== -1 && seat < leftover.length) leftover[seat] += c.value ?? 0
   }
-  return [wordScoreHost - leftover[0], wordScoreGuest - leftover[1]]
+  return scores.map((s, i) => s - leftover[i])
 }
 
-// Which seat does this device hold? The server is the authority on roles —
-// clients send a persistent device id (`?d=`) with every request.
-function seatOf(row, dev) {
-  if (dev && row.host_id === dev) return 0
-  if (dev && row.guest_id === dev) return 1
-  return null
+// Every seat for a game, in turn order, with each seat's device id and
+// resolved in-game color.
+async function seatsFor(sql, code) {
+  const rows = await sql`
+		SELECT seat, device_id, color FROM game_players
+		WHERE code = ${code} ORDER BY seat ASC`
+  return rows
 }
 
-// [hostValue, guestValue] for one players.<column>, either null if that
-// seat has no player row / no value set yet.
-async function columnFor(sql, row, column) {
-  const ids = [row.host_id, row.guest_id].filter(Boolean)
-  if (!ids.length) return [null, null]
-  const rows =
-    column === 'color'
-      ? await sql`SELECT id, color FROM players WHERE id = ANY(${ids})`
-      : await sql`SELECT id, name FROM players WHERE id = ANY(${ids})`
-  const byId = new Map(rows.map((r) => [r.id, r[column]]))
-  return [byId.get(row.host_id) ?? null, byId.get(row.guest_id) ?? null]
+// Which seat does this device hold in this game? The server is the
+// authority on roles — clients send a persistent device id (`?d=`) with
+// every request.
+function seatOf(seats, dev) {
+  const row = seats.find((s) => s.device_id === dev)
+  return row ? row.seat : null
 }
-const namesFor = (sql, row) => columnFor(sql, row, 'name')
-const colorPrefsFor = (sql, row) => columnFor(sql, row, 'color')
+
+// Player profile (name) for every seat, in seat order.
+async function namesFor(sql, seats) {
+  if (!seats.length) return []
+  const ids = seats.map((s) => s.device_id)
+  const rows = await sql`SELECT id, name FROM players WHERE id = ANY(${ids})`
+  const byId = new Map(rows.map((r) => [r.id, r.name]))
+  return seats.map((s) => byId.get(s.device_id) ?? null)
+}
 
 function generateCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
@@ -232,8 +270,8 @@ export default {
 
       // PUT /players/:id { name, color } → set/change profile.
       // name: up to 12 chars. color: one of TILE_COLORS — this is the
-      // player's stored *preference*; a same-game collision with the
-      // opponent is resolved separately (see resolveGameColors), not here.
+      // player's stored *preference*; a same-game collision with another
+      // seat is resolved separately (see resolveSeatColor), not here.
       if (parts[0] === 'players' && req.method === 'PUT' && !parts[2]) {
         const { name, color } = await req.json()
         if (typeof name !== 'string' || !name.trim() || name.length > 12)
@@ -251,30 +289,59 @@ export default {
       if (parts[0] === 'players' && req.method === 'GET' && parts[2] === 'games') {
         const playerId = parts[1]
         const rows = await sql`
-					SELECT code, seed, host_id, guest_id, host_score, guest_score,
-						winner_seat, final_state, finished_at
+					SELECT code, seed, scores, seat_device_ids, seat_colors, winner_seat, final_state, finished_at
 					FROM game_results
-					WHERE host_id = ${playerId} OR guest_id = ${playerId}
+					WHERE seat_device_ids ? ${playerId}
 					ORDER BY finished_at DESC LIMIT 200`
+        // Every device id across every returned game, in one batch, so each
+        // row's seats can be labeled with a name without a query per row.
+        // Color is NOT looked up here — players.color is just a live
+        // preference and can change after the fact; seat_colors on the row
+        // is the color actually played with in that specific game.
+        const allIds = [
+          ...new Set(rows.flatMap((r) => Object.values(r.seat_device_ids ?? {}))),
+        ]
+        const nameById = new Map()
+        if (allIds.length) {
+          const playerRows = await sql`
+						SELECT id, name FROM players WHERE id = ANY(${allIds})`
+          for (const p of playerRows) nameById.set(p.id, p.name)
+        }
         return json({
-          games: rows.map((r) => ({
-            code: r.code,
-            you: r.host_id === playerId ? 0 : 1,
-            opponentId: r.host_id === playerId ? r.guest_id : r.host_id,
-            hostScore: r.host_score,
-            guestScore: r.guest_score,
-            winnerSeat: r.winner_seat,
-            finalState: r.final_state,
-            finishedAt: r.finished_at,
-          })),
+          games: rows.map((r) => {
+            const seatIds = r.seat_device_ids ?? {}
+            const seatColors = r.seat_colors ?? {}
+            const you = Number(
+              Object.entries(seatIds).find(([, id]) => id === playerId)?.[0],
+            )
+            const seats = Object.entries(seatIds)
+              .sort(([a], [b]) => Number(a) - Number(b))
+              .map(([seat, id]) => ({
+                seat: Number(seat),
+                name: nameById.get(id) ?? null,
+                color: seatColors[seat] ?? null,
+              }))
+            return {
+              code: r.code,
+              you,
+              seats,
+              scores: r.scores,
+              winnerSeat: r.winner_seat,
+              finalState: r.final_state,
+              finishedAt: r.finished_at,
+            }
+          }),
         })
       }
 
       if (parts[0] !== 'games') return json({ error: 'not found' }, 404)
       const code = parts[1]?.toUpperCase()
 
-      // POST /games → create a game, returns its code
+      // POST /games { maxPlayers } → create a game, returns its code
       if (req.method === 'POST' && !code) {
+        const body = await req.json().catch(() => ({}))
+        const requestedMax = Number(body.maxPlayers) || MAX_PLAYERS
+        const clampedMax = Math.min(MAX_PLAYERS, Math.max(2, requestedMax))
         // opportunistic cleanup of long-dead games
         ctx.waitUntil(
           sql`DELETE FROM games WHERE updated_at < now() - interval '30 days'`,
@@ -282,56 +349,77 @@ export default {
         ctx.waitUntil(touchPlayer(sql, dev))
         for (let i = 0; i < 5; i++) {
           const c = generateCode()
-          const rows =
-            await sql`INSERT INTO games (code, host_id) VALUES (${c}, ${dev})
-							ON CONFLICT (code) DO NOTHING RETURNING code`
-          if (rows.length) return json({ code: c, version: 1, you: 0 })
+          const rows = await sql`
+						INSERT INTO games (code, max_players) VALUES (${c}, ${clampedMax})
+						ON CONFLICT (code) DO NOTHING RETURNING code`
+          if (rows.length) {
+            const pref = await sql`SELECT name, color FROM players WHERE id = ${dev}`
+            const color = pref[0]?.color ?? randomColor()
+            await sql`
+							INSERT INTO game_players (code, seat, device_id, color) VALUES (${c}, 0, ${dev}, ${color})`
+            return json({
+              code: c,
+              version: 1,
+              you: 0,
+              maxPlayers: clampedMax,
+              started: false,
+              seats: [{ seat: 0, name: pref[0]?.name ?? null, color }],
+            })
+          }
         }
         return json({ error: 'could not allocate code' }, 500)
       }
       if (!code) return json({ error: 'not found' }, 404)
 
-      // POST /games/:code/join → claim the guest seat (the host joining
-      // its own game keeps the host seat)
+      // POST /games/:code/join → claim the next open seat (a device already
+      // seated, including the host, keeps its existing seat on rejoin)
       if (req.method === 'POST' && parts[2] === 'join') {
         ctx.waitUntil(touchPlayer(sql, dev))
-        const rows = await sql`
-					UPDATE games SET guest_joined = TRUE,
-						guest_id = CASE WHEN host_id = ${dev} THEN guest_id ELSE ${dev} END,
-						version = version + 1, updated_at = now()
-					WHERE code = ${code}
-					RETURNING version, seed, state, host_id, guest_id, host_color, guest_color`
-        if (!rows.length) return json({ error: 'no such game' }, 404)
-        let g = rows[0]
-        // Resolve each seat's in-game color once, the first time both seats
-        // are known — a reconnect/rejoin must not reshuffle an already-set
-        // pair, so this only fires while host_color is still unset.
-        if (!g.host_color) {
-          const [hostPref, guestPref] = await colorPrefsFor(sql, g)
-          const [hostColor, guestColor] = resolveGameColors(hostPref, guestPref)
-          const updated = await sql`
-						UPDATE games SET host_color = ${hostColor}, guest_color = ${guestColor}
-						WHERE code = ${code}
-						RETURNING version, seed, state, host_id, guest_id, host_color, guest_color`
-          g = updated[0]
+        const gameRows = await sql`
+					SELECT code, version, seed, state, max_players, started FROM games WHERE code = ${code}`
+        if (!gameRows.length) return json({ error: 'no such game' }, 404)
+        const game = gameRows[0]
+
+        let seats = await seatsFor(sql, code)
+        let mySeat = seatOf(seats, dev)
+        if (mySeat == null) {
+          if (game.started) return json({ error: 'game already started' }, 409)
+          if (seats.length >= game.max_players)
+            return json({ error: 'game is full' }, 409)
+          mySeat = seats.length
+          const [preference] = await sql`
+						SELECT color FROM players WHERE id = ${dev}`
+          const takenColors = seats.map((s) => s.color).filter(Boolean)
+          const color = resolveSeatColor(preference?.color ?? null, takenColors)
+          await sql`
+						INSERT INTO game_players (code, seat, device_id, color)
+						VALUES (${code}, ${mySeat}, ${dev}, ${color})
+						ON CONFLICT (code, seat) DO NOTHING`
+          await sql`UPDATE games SET version = version + 1, updated_at = now() WHERE code = ${code}`
+          seats = await seatsFor(sql, code)
         }
-        const [hostName, guestName] = await namesFor(sql, g)
+
+        const names = await namesFor(sql, seats)
+        const versionRows = await sql`SELECT version FROM games WHERE code = ${code}`
         return json({
-          version: g.version,
-          seed: g.seed,
-          state: g.state,
-          you: seatOf(g, dev),
-          hostName,
-          guestName,
-          hostColor: g.host_color,
-          guestColor: g.guest_color,
+          version: versionRows[0].version,
+          seed: game.seed,
+          state: game.state,
+          you: mySeat,
+          maxPlayers: game.max_players,
+          started: game.started,
+          seats: seats.map((s, i) => ({
+            seat: s.seat,
+            name: names[i],
+            color: s.color,
+          })),
         })
       }
 
       // PUT /games/:code/push-sub { playerIndex, subscription }
       if (req.method === 'PUT' && parts[2] === 'push-sub') {
         const { playerIndex, subscription } = await req.json()
-        if (playerIndex !== 0 && playerIndex !== 1)
+        if (!Number.isInteger(playerIndex) || playerIndex < 0 || playerIndex >= MAX_PLAYERS)
           return json({ error: 'bad playerIndex' }, 400)
         const rows = await sql`
 					UPDATE games
@@ -342,25 +430,36 @@ export default {
         return json({ ok: true })
       }
 
+      // POST /games/:code/start → host marks the lobby closed; the client
+      // uploads the actual seed/state via PUT .../state right after, which
+      // also sets `started` — so this deliberately does NOT bump `version`,
+      // otherwise it would race that immediately-following state upload's
+      // optimistic version check.
+      if (req.method === 'POST' && parts[2] === 'start') {
+        const seats = await seatsFor(sql, code)
+        if (seatOf(seats, dev) !== 0)
+          return json({ error: 'only the host can start the game' }, 403)
+        await sql`UPDATE games SET started = TRUE, updated_at = now() WHERE code = ${code}`
+        return json({ ok: true })
+      }
+
       // PUT /games/:code/state { state, seed, version } → optimistic write
       if (req.method === 'PUT' && parts[2] === 'state') {
         const { state, seed, version } = await req.json()
         if (!state || typeof version !== 'number')
           return json({ error: 'bad body' }, 400)
         ctx.waitUntil(touchPlayer(sql, dev))
-        const before = await sql`
-					SELECT state, host_id, guest_id FROM games WHERE code = ${code}`
+        const before = await sql`SELECT state FROM games WHERE code = ${code}`
         const wasGameOver = before[0]?.state?.gameOver ?? false
         const rows = await sql`
 					UPDATE games
 					SET state = ${JSON.stringify(state)}::jsonb, seed = ${seed ?? null},
-						version = version + 1, updated_at = now()
+						started = TRUE, version = version + 1, updated_at = now()
 					WHERE code = ${code} AND version = ${version}
 					RETURNING version, push_subs`
         if (!rows.length) {
           const cur = await sql`
-						SELECT version, seed, guest_joined, state, host_id, guest_id,
-							host_color, guest_color
+						SELECT code, version, seed, state, max_players, started
 						FROM games WHERE code = ${code}`
           if (!cur.length) return json({ error: 'no such game' }, 404)
           // stale writer: hand back the current truth
@@ -370,15 +469,23 @@ export default {
         // the leftover-rack deduction happens here, not on the client, so
         // it's correct regardless of which client's upload wins any race.
         if (state.gameOver && !wasGameOver) {
-          const [hostScore, guestScore] = finalScores(state)
-          const winnerSeat =
-            hostScore === guestScore ? null : hostScore > guestScore ? 0 : 1
-          const { host_id, guest_id } = before[0] ?? {}
+          const seats = await seatsFor(sql, code)
+          const scores = finalScores(state)
+          const best = Math.max(...scores)
+          const winners = scores.flatMap((s, i) => (s === best ? [i] : []))
+          const winnerSeat = winners.length === 1 ? winners[0] : null
+          const seatDeviceIds = Object.fromEntries(
+            seats.map((s) => [s.seat, s.device_id]),
+          )
+          const seatColors = Object.fromEntries(
+            seats.map((s) => [s.seat, s.color]),
+          )
           ctx.waitUntil(
             sql`INSERT INTO game_results
-							(code, seed, host_id, guest_id, host_score, guest_score, winner_seat, final_state)
-							VALUES (${code}, ${seed ?? null}, ${host_id ?? null}, ${guest_id ?? null},
-								${hostScore}, ${guestScore}, ${winnerSeat}, ${JSON.stringify(state)}::jsonb)`,
+							(code, seed, scores, seat_device_ids, seat_colors, winner_seat, final_state)
+							VALUES (${code}, ${seed ?? null}, ${JSON.stringify(scores)}::jsonb,
+								${JSON.stringify(seatDeviceIds)}::jsonb, ${JSON.stringify(seatColors)}::jsonb,
+								${winnerSeat}, ${JSON.stringify(state)}::jsonb)`,
           )
         }
         // notify the player whose turn it now is (skip fresh deals)
@@ -393,19 +500,17 @@ export default {
       // GET /games/:code/results → per-code win tally + recent history
       if (req.method === 'GET' && parts[2] === 'results') {
         const rows = await sql`
-					SELECT host_score, guest_score, winner_seat, finished_at
+					SELECT scores, winner_seat, finished_at
 					FROM game_results WHERE code = ${code}
 					ORDER BY finished_at DESC LIMIT 50`
-        const wins = [0, 0]
+        const wins = {}
         for (const r of rows) {
-          if (r.winner_seat === 0) wins[0]++
-          else if (r.winner_seat === 1) wins[1]++
+          if (r.winner_seat != null) wins[r.winner_seat] = (wins[r.winner_seat] ?? 0) + 1
         }
         return json({
           wins,
           games: rows.map((r) => ({
-            hostScore: r.host_score,
-            guestScore: r.guest_score,
+            scores: r.scores,
             winnerSeat: r.winner_seat,
             finishedAt: r.finished_at,
           })),
@@ -416,18 +521,18 @@ export default {
       if (req.method === 'GET' && !parts[2]) {
         const since = Number(url.searchParams.get('v') ?? -1)
         const rows = await sql`
-					SELECT version, seed, guest_joined, state, host_id, guest_id,
-						host_color, guest_color
+					SELECT code, version, seed, state, max_players, started
 					FROM games WHERE code = ${code}`
         if (!rows.length) return json({ error: 'no such game' }, 404)
         const g = rows[0]
+        const seats = await seatsFor(sql, code)
         if (g.version === since)
           return json({
             changed: false,
             version: g.version,
-            you: seatOf(g, dev),
+            you: seatOf(seats, dev),
           })
-        return json({ changed: true, ...(await shape(sql, g, dev)) })
+        return json({ changed: true, ...(await shape(sql, g, dev, seats)) })
       }
 
       return json({ error: 'not found' }, 404)
@@ -437,17 +542,20 @@ export default {
   },
 }
 
-async function shape(sql, row, dev) {
-  const [hostName, guestName] = await namesFor(sql, row)
+async function shape(sql, row, dev, seats) {
+  seats ??= await seatsFor(sql, row.code)
+  const names = await namesFor(sql, seats)
   return {
     version: row.version,
     seed: row.seed,
-    guestJoined: row.guest_joined,
     state: row.state,
-    you: seatOf(row, dev),
-    hostName,
-    guestName,
-    hostColor: row.host_color ?? null,
-    guestColor: row.guest_color ?? null,
+    you: seatOf(seats, dev),
+    maxPlayers: row.max_players,
+    started: row.started,
+    seats: seats.map((s, i) => ({
+      seat: s.seat,
+      name: names[i],
+      color: s.color,
+    })),
   }
 }

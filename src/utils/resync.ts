@@ -11,7 +11,7 @@ import { returnTileToRack } from './turnLogic'
 export function preserveLocalRackOrder(
   localCards: CardType[],
   snapshotCards: CardType[],
-  playerIndex: 0 | 1,
+  playerIndex: number,
 ): CardType[] {
   const rackPile = RACK_PILE[playerIndex]
   const localSlot = new Map(
@@ -41,7 +41,7 @@ export function carryForwardPending(
   cards: CardType[],
   localPendingIds: number[],
   localCardsBefore: CardType[],
-  playerIndex: 0 | 1,
+  playerIndex: number,
 ): { cards: CardType[]; pending: number[] } {
   const pending: number[] = []
   for (const id of localPendingIds) {

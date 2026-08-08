@@ -24,7 +24,7 @@ import {
   commitPlacements,
   endTurn,
   exchangeTiles,
-  otherPlayer,
+  nextActivePlayer,
   placeOnSelected,
   playSelectedTile,
   recallPendingToRack,
@@ -39,9 +39,10 @@ export interface GameState {
   cards: CardType[]
   activeCard: CardType | null
   cursorState: { mouseX: number; mouseY: number; pressed: boolean }
-  currentPlayerIndex: 0 | 1
-  localPlayerIndex: 0 | 1 // 0 = host, 1 = guest
-  scores: [number, number]
+  currentPlayerIndex: number
+  localPlayerIndex: number // seat this device holds, 0-indexed in turn order
+  playerCount: number // number of seated players (2-4)
+  scores: number[]
   pending: number[] // tile ids placed on the board this turn, not yet committed
   selectedSquare: number | null // board square tiles will play onto
   selectedDir: 'right' | 'down' // direction the selection advances after a play
@@ -53,7 +54,7 @@ export interface GameState {
   blankPick: number | null // blank tile awaiting a letter choice (modal open)
   moveCount: number // total turns taken; used to resync after reconnects
   gameOver: boolean
-  givenUpBy: 0 | 1 | null // if set, that player is done — the other plays on solo
+  givenUpBy: number[] // seats that are done — the rest keep playing without them
   showInstructionsModal: boolean
   showTwoLetterModal: boolean
   showUnseenModal: boolean
@@ -62,10 +63,15 @@ export interface GameState {
 
 export interface GameStore extends GameState {
   newGame: () => void
-  startMultiplayerGame: (seed: number, localPlayerIndex: 0 | 1) => void
+  startMultiplayerGame: (
+    seed: number,
+    localPlayerIndex: number,
+    playerCount: number,
+  ) => void
   restoreMultiplayerGame: (
     state: SavedGameState,
-    localPlayerIndex: 0 | 1,
+    localPlayerIndex: number,
+    playerCount: number,
   ) => void
   onMouseDown: (params: MouseParams) => void
   onMouseUp: (params: MouseParams) => void
@@ -100,15 +106,20 @@ const SWAP_MIN_DRAG = 12
 let swapArmed = false
 
 export const useGameStore = create<GameStore>((set, get) => {
-  const startGame = (seed?: number, localPlayerIndex: 0 | 1 = 0) => {
+  const startGame = (
+    seed?: number,
+    localPlayerIndex = 0,
+    playerCount = 2,
+  ) => {
     const s = seed ?? Date.now()
     let cards = generateTiles(s)
-    cards = drawToRack(cards, 0, RACK_SIZE)
-    cards = drawToRack(cards, 1, RACK_SIZE)
+    for (let i = 0; i < playerCount; i++) cards = drawToRack(cards, i, RACK_SIZE)
     set({
       ...initializeGameState(),
       cards,
       localPlayerIndex,
+      playerCount,
+      scores: Array.from({ length: playerCount }, () => 0),
     })
   }
 
@@ -133,9 +144,9 @@ export const useGameStore = create<GameStore>((set, get) => {
     ...initializeGameState(),
 
     newGame,
-    startMultiplayerGame: (seed, localPlayerIndex) =>
-      startGame(seed, localPlayerIndex),
-    restoreMultiplayerGame: (saved, localPlayerIndex) => {
+    startMultiplayerGame: (seed, localPlayerIndex, playerCount) =>
+      startGame(seed, localPlayerIndex, playerCount),
+    restoreMultiplayerGame: (saved, localPlayerIndex, playerCount) => {
       const before = get()
 
       // The snapshot's rack order and pending tiles are stale/missing from
@@ -162,12 +173,13 @@ export const useGameStore = create<GameStore>((set, get) => {
         selectedSquare,
         selectedDir: before.selectedDir,
         localPlayerIndex,
+        playerCount,
         currentPlayerIndex: saved.currentPlayerIndex,
         scores: saved.scores,
         moveCount: saved.moveCount ?? 0,
         gameOver: saved.gameOver,
         lastPlay: saved.lastPlay ?? null,
-        givenUpBy: saved.givenUpBy ?? null,
+        givenUpBy: saved.givenUpBy ?? [],
       })
     },
 
@@ -366,25 +378,29 @@ export const useGameStore = create<GameStore>((set, get) => {
       endTurn(us, false, get, set)
     },
 
-    // Bow out. The other player keeps taking turns on their own — no more
-    // passing the turn back to us — until they empty their rack (with an
-    // empty bag), pass, or give up too.
+    // Bow out. The remaining players keep taking turns among themselves —
+    // the turn order skips us from now on — until they empty their rack
+    // with an empty bag, or every player has given up.
     giveUp: () => {
       const state = get()
       const us = state.localPlayerIndex
       // once we've already given up, giving up again is a no-op
-      if (state.gameOver || state.givenUpBy === us) return
-      const opponentAlreadyGaveUp = state.givenUpBy === otherPlayer(us)
+      if (state.gameOver || state.givenUpBy.includes(us)) return
+      const givenUpBy = [...state.givenUpBy, us]
       const ourTurn = state.currentPlayerIndex === us
+      const everyoneGaveUp = givenUpBy.length >= state.playerCount
+      const nextPlayer = ourTurn
+        ? nextActivePlayer(us, state.playerCount, givenUpBy)
+        : state.currentPlayerIndex
       // Withdraw fully: any tiles placed for planning (turn or not) go back
       // to the rack, so nothing is left stranded on the board.
       // Leftover-rack deduction happens server-side when it records the
       // result (see server/worker.js) — scores here stay word-points-only.
       set({
         cards: recallPendingToRack(state.cards, state.pending, us),
-        givenUpBy: us,
-        currentPlayerIndex: otherPlayer(us),
-        gameOver: opponentAlreadyGaveUp,
+        givenUpBy,
+        currentPlayerIndex: nextPlayer,
+        gameOver: everyoneGaveUp,
         // bump moveCount so this change is recognized as newer and uploaded
         moveCount: state.moveCount + 1,
         pending: [],
@@ -430,11 +446,12 @@ function initializeGameState(): Omit<GameState, 'cards'> {
     blankPick: null,
     currentPlayerIndex: 0,
     localPlayerIndex: 0,
+    playerCount: 2,
     scores: [0, 0],
     pending: [],
     moveCount: 0,
     gameOver: false,
-    givenUpBy: null,
+    givenUpBy: [],
     showInstructionsModal: false,
     showTwoLetterModal: false,
     showUnseenModal: false,
@@ -468,13 +485,16 @@ function snapshotGameState(state: GameState): SavedGameState {
 // host's "go ahead and deal" signal) and supplies the snapshot the
 // multiplayer layer uploads.
 setGameHooks({
-  onGameStart: (seed, localPlayerIndex) =>
-    useGameStore.getState().startMultiplayerGame(seed, localPlayerIndex),
-  onGameResume: (state, localPlayerIndex) =>
-    useGameStore.getState().restoreMultiplayerGame(state, localPlayerIndex),
+  onGameStart: (seed, localPlayerIndex, playerCount) =>
+    useGameStore
+      .getState()
+      .startMultiplayerGame(seed, localPlayerIndex, playerCount),
+  onGameResume: (state, localPlayerIndex, playerCount) =>
+    useGameStore
+      .getState()
+      .restoreMultiplayerGame(state, localPlayerIndex, playerCount),
   onDisconnect: () =>
     useGameStore.setState({ ...initializeGameState(), cards: [] }),
-  onHostReadyToStart: () => useMultiplayerStore.getState().startNewGame(),
   gameSnapshot: () => {
     const s = useGameStore.getState()
     return s.cards.length > 0 ? snapshotGameState(s) : null

@@ -18,7 +18,7 @@ export const getPileAtPoint = (x: number, y: number): number => {
   return +(el?.dataset.pileindex ?? '-1')
 }
 
-export const getRackRect = (playerIndex: 0 | 1): DOMRect | null => {
+export const getRackRect = (playerIndex: number): DOMRect | null => {
   const rackEl = document.querySelector(
     `.pile[data-pileindex="${RACK_PILE[playerIndex]}"]`,
   ) as HTMLDivElement | null
@@ -28,7 +28,7 @@ export const getRackRect = (playerIndex: 0 | 1): DOMRect | null => {
 export const isOverRack = (
   x: number,
   y: number,
-  playerIndex: 0 | 1,
+  playerIndex: number,
 ): boolean => {
   const r = getRackRect(playerIndex)
   return !!r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
@@ -40,7 +40,7 @@ export const swapWithinRack = (
   clientX: number,
   clientY: number,
   card: CardType,
-  playerIndex: 0 | 1,
+  playerIndex: number,
   get: () => { cards: CardType[] },
   set: (s: { cards: CardType[] }) => void,
 ) => {

@@ -5,6 +5,8 @@ export const CARD_TRANSITION_DURATION = 150
 export const BOARD_SIZE = 15 // 15x15
 export const RACK_SIZE = 7
 
+export const MAX_PLAYERS = 4
+
 export const BINGO_BONUS = 50 // using all 7 tiles in one turn
 
 // Pile-index scheme (reuses the card/pile rendering system):
@@ -14,7 +16,7 @@ export const BINGO_BONUS = 50 // using all 7 tiles in one turn
 export const BAG_PILE = 0
 export const FIRST_SQUARE_PILE = 1
 export const LAST_SQUARE_PILE = BOARD_SIZE * BOARD_SIZE // 225
-export const RACK_PILE: [number, number] = [1000, 1001]
+export const RACK_PILE: number[] = [1000, 1001, 1002, 1003]
 
 // The 8 selectable player tile colors (see server/worker.js TILE_COLORS —
 // keep these two lists in sync). All chosen light enough that black tile

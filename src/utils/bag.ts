@@ -41,7 +41,7 @@ export function generateTiles(seed: number): CardType[] {
 // the rack up to RACK_SIZE. Mutates & returns a new cards array.
 export function drawToRack(
   cards: CardType[],
-  playerIndex: 0 | 1,
+  playerIndex: number,
   count: number,
 ): CardType[] {
   const rackPile = RACK_PILE[playerIndex]
@@ -60,7 +60,7 @@ export function drawToRack(
   )
 }
 
-export function reindexRack(cards: CardType[], playerIndex: 0 | 1): CardType[] {
+export function reindexRack(cards: CardType[], playerIndex: number): CardType[] {
   const rackPile = RACK_PILE[playerIndex]
   const rack = tilesInPile(rackPile, cards)
   return cards.map((c) => {

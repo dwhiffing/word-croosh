@@ -18,7 +18,20 @@ import { validatePlay } from './scoring'
 type Get = () => GameStore
 type Set = (s: Partial<GameStore>) => void
 
-export const otherPlayer = (i: 0 | 1): 0 | 1 => (i === 0 ? 1 : 0)
+// Next seat after `i` in turn order (0..playerCount-1, wrapping), skipping
+// any seat that has already given up. Returns `i` itself if everyone else
+// has given up (they keep playing solo).
+export const nextActivePlayer = (
+  i: number,
+  playerCount: number,
+  givenUpBy: number[],
+): number => {
+  for (let step = 1; step <= playerCount; step++) {
+    const next = (i + step) % playerCount
+    if (next === i || !givenUpBy.includes(next)) return next
+  }
+  return i
+}
 
 // ── Placement ───────────────────────────────────────────────────────
 // Return a tile to the rack, preferring the slot it was played from (still
@@ -27,7 +40,7 @@ export const otherPlayer = (i: 0 | 1): 0 | 1 => (i === 0 ? 1 : 0)
 export const returnTileToRack = (
   cards: CardType[],
   tileId: number,
-  playerIndex: 0 | 1,
+  playerIndex: number,
 ): CardType[] => {
   const rackPile = RACK_PILE[playerIndex]
   const tile = cards.find((c) => c.id === tileId)!
@@ -55,7 +68,7 @@ export const returnTileToRack = (
 export function recallPendingToRack(
   cards: CardType[],
   pendingIds: number[],
-  playerIndex: 0 | 1,
+  playerIndex: number,
 ): CardType[] {
   for (const id of pendingIds) cards = returnTileToRack(cards, id, playerIndex)
   return reindexRack(cards, playerIndex)
@@ -118,7 +131,7 @@ type Placement = { tileId: number; pile: number; letter: string }
 
 export function commitPlacements(
   placements: Placement[],
-  playerIndex: 0 | 1,
+  playerIndex: number,
   get: Get,
   set: Set,
 ) {
@@ -143,9 +156,12 @@ export function commitPlacements(
 
   // Refill the mover's rack from the bag.
   cards = drawToRack(cards, playerIndex, RACK_SIZE)
-  cards = reindexRack(cards, otherPlayer(playerIndex)) // keep other rack tidy
+  // keep every other rack tidy (their cardPileIndex slots don't move)
+  for (let i = 0; i < get().playerCount; i++) {
+    if (i !== playerIndex) cards = reindexRack(cards, i)
+  }
 
-  const scores: [number, number] = [...get().scores]
+  const scores = [...get().scores]
   scores[playerIndex] += score
   set({
     cards,
@@ -162,7 +178,7 @@ export function commitPlacements(
 // drawn. Runs identically on both peers to keep the shared bag in lockstep.
 export function exchangeTiles(
   tileIds: number[],
-  playerIndex: 0 | 1,
+  playerIndex: number,
   get: Get,
   set: Set,
 ) {
@@ -185,25 +201,28 @@ export function exchangeTiles(
 }
 
 export function endTurn(
-  playerIndex: 0 | 1,
+  playerIndex: number,
   wasPass: boolean,
   get: Get,
   set: Set,
 ) {
   const state = get()
+  void wasPass
 
-  // Game ends: two consecutive passes, or the mover emptied their rack with
-  // an empty bag. If the other player has given up, the mover is playing
-  // solo — a single pass (or emptying their rack) is enough to end it.
+  // Game ends when the mover empties their rack with an empty bag, or when
+  // every player has given up (the last one standing keeps playing solo
+  // against the bag until then).
   const bagEmpty = tilesInPile(BAG_PILE, state.cards).length === 0
   const moverRackEmpty =
     tilesInPile(RACK_PILE[playerIndex], state.cards).length === 0
-  const opponentGaveUp = state.givenUpBy === otherPlayer(playerIndex)
-  const gameOver = (bagEmpty && moverRackEmpty) || (opponentGaveUp && wasPass)
+  const everyoneGaveUp = state.givenUpBy.length >= state.playerCount
+  const gameOver = (bagEmpty && moverRackEmpty) || everyoneGaveUp
 
-  // Once someone has given up, the turn never returns to them — the
-  // remaining player just keeps going.
-  const nextPlayer = opponentGaveUp ? playerIndex : otherPlayer(playerIndex)
+  const nextPlayer = nextActivePlayer(
+    playerIndex,
+    state.playerCount,
+    state.givenUpBy,
+  )
 
   // `scores` here is intentionally left as "points from played words only" —
   // the server subtracts each player's leftover rack when it records the

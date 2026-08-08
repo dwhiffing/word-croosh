@@ -15,9 +15,7 @@ const Tile = ({ cardId }: { cardId: number }) => {
   const store = useGameStore(useShallow(getShallowTileState(cardId)))
   // Colors are a multiplayer-profile concept, not game state — read them
   // separately so a solo/AI game (no colors set) just renders the default.
-  const { hostColor, guestColor } = useMultiplayerStore(
-    useShallow((s) => ({ hostColor: s.hostColor, guestColor: s.guestColor })),
-  )
+  const seats = useMultiplayerStore((s) => s.seats)
   const [zIndex, setZIndex] = useState(store.zIndex)
   const [hasMounted, setHasMounted] = useState(false)
   useWindowEvent('resize', debounce(useForceUpdate(), 100))
@@ -36,7 +34,7 @@ const Tile = ({ cardId }: { cardId: number }) => {
 
   const translate = `${store.x}px ${store.y}px 0`
   const dur = store.isDragging ? 0 : CARD_TRANSITION_DURATION
-  const ownerColor = store.owner === 0 ? hostColor : store.owner === 1 ? guestColor : null
+  const ownerColor = store.owner != null ? seats[store.owner]?.color ?? null : null
 
   return (
     <div
@@ -94,9 +92,10 @@ const getShallowTileState =
     const isActive = cardId === state.activeCard?.id
     const isInBag = pileIndex === 0
     const ownRack = RACK_PILE[state.localPlayerIndex]
-    const oppRack = RACK_PILE[state.localPlayerIndex === 0 ? 1 : 0]
-    // hide identities of bag tiles and the opponent's rack tiles
-    const isFaceDown = isInBag || pileIndex === oppRack
+    const isOpponentRack =
+      pileIndex !== ownRack && RACK_PILE.slice(0, state.playerCount).includes(pileIndex)
+    // hide identities of bag tiles and every opponent's rack tiles
+    const isFaceDown = isInBag || isOpponentRack
     const isDragging = isActive && pressed
 
     const x = isDragging ? mouseX : xPos
@@ -105,7 +104,7 @@ const getShallowTileState =
     const isSwapSelected = state.swapMode && state.swapIds.includes(cardId)
     const isOnBoard = pileIndex >= 1 && pileIndex <= 225
     // opponent-rack tiles collapse into a neat stacked pile; own-rack fans out
-    const opacity = pileIndex === oppRack || isInBag ? 0 : 1
+    const opacity = isOpponentRack || isInBag ? 0 : 1
 
     const scale = isDragging ? pileScale * 1.05 : pileScale
 
@@ -116,13 +115,12 @@ const getShallowTileState =
     // the local player, since only they can have tiles pending. In a rack
     // it's whoever's rack it's currently sitting in; the bag has no owner.
     const isPending = state.pending.includes(cardId)
-    const owner: 0 | 1 | null = isOnBoard
+    const rackSeat = RACK_PILE.indexOf(pileIndex)
+    const owner: number | null = isOnBoard
       ? placedBy ?? (isPending ? state.localPlayerIndex : null)
-      : pileIndex === RACK_PILE[0]
-        ? 0
-        : pileIndex === RACK_PILE[1]
-          ? 1
-          : null
+      : rackSeat !== -1
+        ? rackSeat
+        : null
 
     return {
       x,
@@ -158,7 +156,7 @@ type TileShallowState = {
   letter: string
   value: number
   isBlank: boolean
-  owner: 0 | 1 | null
+  owner: number | null
 }
 
 export default memo(Tile)

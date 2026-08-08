@@ -10,39 +10,43 @@ const API_URL =
 
 export interface SavedGameState {
   cards: CardType[]
-  currentPlayerIndex: 0 | 1
-  scores: [number, number]
+  currentPlayerIndex: number
+  scores: number[]
   moveCount?: number
   gameOver: boolean
   lastPlay?: { word: string; score: number; tileIds: number[] } | null
-  givenUpBy?: 0 | 1 | null
+  givenUpBy?: number[] // seats that have given up
+}
+
+// One seat's profile as known to the server for the current game code.
+export interface SeatInfo {
+  seat: number
+  name: string | null
+  color: TileColorName | null
 }
 
 export interface GameData {
   version: number
   seed: number | null
-  guestJoined: boolean
   state: SavedGameState | null
-  you?: 0 | 1 | null // which seat this device holds, per the server
+  you?: number | null // which seat this device holds, per the server
+  maxPlayers?: number
+  started?: boolean
+  seats?: SeatInfo[]
   changed?: boolean
   conflict?: boolean
-  hostName?: string | null
-  guestName?: string | null
-  hostColor?: TileColorName | null
-  guestColor?: TileColorName | null
 }
 
 // One row per finished game under a code, recorded server-side the moment
 // gameOver is first seen — see server/worker.js.
 export interface GameResult {
-  hostScore: number
-  guestScore: number
-  winnerSeat: 0 | 1 | null // null = tie
+  scores: number[]
+  winnerSeat: number | null // null = tie
   finishedAt: string
 }
 
 export interface GameResults {
-  wins: [number, number]
+  wins: Record<number, number>
   games: GameResult[]
 }
 
@@ -50,18 +54,17 @@ export interface GameResults {
 // full final board so it can be reopened for viewing.
 export interface PlayerGameHistoryEntry {
   code: string
-  you: 0 | 1
-  opponentId: string | null
-  hostScore: number
-  guestScore: number
-  winnerSeat: 0 | 1 | null
+  you: number
+  seats: SeatInfo[]
+  scores: number[]
+  winnerSeat: number | null
   finalState: SavedGameState | null
   finishedAt: string
 }
 
 // Persistent random id identifying this device to the server; the server
-// uses it to remember which seat (host/guest) we hold in each game, and as
-// the player identity behind stats/history.
+// uses it to remember which seat we hold in each game, and as the player
+// identity behind stats/history.
 export function deviceId(): string {
   let id = localStorage.getItem('word-croosh-device-id')
   if (!id) {
@@ -87,24 +90,32 @@ async function request(
   return { status: res.status, data }
 }
 
-export async function apiCreateGame(): Promise<{
-  code: string
-  version: number
-}> {
-  const { status, data } = await request('/games', { method: 'POST' })
+export async function apiCreateGame(
+  maxPlayers: number,
+): Promise<{ code: string; version: number; seats: SeatInfo[]; maxPlayers: number }> {
+  const { status, data } = await request('/games', {
+    method: 'POST',
+    body: JSON.stringify({ maxPlayers }),
+  })
   if (status !== 200 || !data.code)
     throw new Error(data.error ?? `HTTP ${status}`)
-  return { code: data.code, version: data.version }
+  return {
+    code: data.code,
+    version: data.version,
+    seats: data.seats ?? [],
+    maxPlayers: data.maxPlayers ?? maxPlayers,
+  }
 }
 
-// null = no such game
+// null = no such game; throws (with a message) on join errors like "full"
+// or "already started".
 export async function apiJoinGame(code: string): Promise<GameData | null> {
   const { status, data } = await request(`/games/${code}/join`, {
     method: 'POST',
   })
   if (status === 404) return null
   if (status !== 200) throw new Error(data.error ?? `HTTP ${status}`)
-  return { ...data, guestJoined: true }
+  return data
 }
 
 // null = no such game
@@ -116,6 +127,14 @@ export async function apiGetGame(
   if (status === 404) return null
   if (status !== 200) throw new Error(data.error ?? `HTTP ${status}`)
   return data
+}
+
+// Host closes the lobby and starts the game — rejects late joiners from then on.
+export async function apiStartGame(code: string): Promise<void> {
+  const { status, data } = await request(`/games/${code}/start`, {
+    method: 'POST',
+  })
+  if (status !== 200) throw new Error(data.error ?? `HTTP ${status}`)
 }
 
 // Optimistic write; a 409 returns the server's current truth as `conflict`.
@@ -134,7 +153,7 @@ export async function apiPutState(
 
 export async function apiPutPushSub(
   code: string,
-  playerIndex: 0 | 1,
+  playerIndex: number,
   subscription: PushSubscriptionJSON,
 ): Promise<void> {
   await request(`/games/${code}/push-sub`, {

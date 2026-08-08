@@ -4,20 +4,39 @@ import {
   deviceId,
   type PlayerGameHistoryEntry,
 } from '../../utils/api'
+import { TILE_COLOR_HEX } from '../../utils/constants'
 import { useGameStore } from '../../utils/gameStore'
 import { BoardViewer } from './BoardViewer'
 import { Modal } from './Modal'
 
+function seatLabel(g: PlayerGameHistoryEntry, seat: number) {
+  if (seat === g.you) return 'You'
+  return g.seats.find((s) => s.seat === seat)?.name ?? `Player ${seat + 1}`
+}
+
+function opponentNames(g: PlayerGameHistoryEntry) {
+  return g.seats
+    .filter((s) => s.seat !== g.you)
+    .map((s) => s.name ?? `Player ${s.seat + 1}`)
+    .join(', ')
+}
+
 function scoreLine(g: PlayerGameHistoryEntry) {
-  const myScore = g.you === 0 ? g.hostScore : g.guestScore
-  const oppScore = g.you === 0 ? g.guestScore : g.hostScore
+  const myScore = g.scores[g.you]
+  const otherScores = g.scores.filter((_, i) => i !== g.you)
   const result =
-    g.winnerSeat == null
-      ? 'Tie'
-      : g.winnerSeat === g.you
-        ? 'Won'
-        : 'Lost'
-  return `${result} ${myScore}-${oppScore}`
+    g.winnerSeat == null ? 'Tie' : g.winnerSeat === g.you ? 'Won' : 'Lost'
+  return `${result} ${myScore}-${otherScores.join('/')}`
+}
+
+function ColorDot({ color }: { color: string | null }) {
+  if (!color) return null
+  return (
+    <span
+      className="inline-block w-2.5 h-2.5 rounded-full shrink-0"
+      style={{ background: TILE_COLOR_HEX[color as keyof typeof TILE_COLOR_HEX] }}
+    />
+  )
 }
 
 export function HistoryModal() {
@@ -53,8 +72,19 @@ export function HistoryModal() {
         {selected ? (
           <>
             <h2 className="text-xl font-bold">{scoreLine(selected)}</h2>
+            <div className="flex flex-col gap-1 text-sm opacity-80">
+              {selected.seats.map((s) => (
+                <div key={s.seat} className="flex items-center gap-2">
+                  <ColorDot color={s.color} />
+                  <span>{seatLabel(selected, s.seat)}</span>
+                  <span className="opacity-60">
+                    {selected.scores[s.seat]}
+                  </span>
+                </div>
+              ))}
+            </div>
             {selected.finalState && (
-              <BoardViewer cards={selected.finalState.cards} />
+              <BoardViewer cards={selected.finalState.cards} seats={selected.seats} />
             )}
             <button className="button" onClick={() => setSelected(null)}>
               Back
@@ -76,7 +106,14 @@ export function HistoryModal() {
                   key={`${g.code}-${g.finishedAt}-${i}`}
                   className="button w-full flex justify-between items-center px-3 py-2 text-left"
                   onClick={() => setSelected(g)}>
-                  <span>{g.code}</span>
+                  <span className="flex items-center gap-1.5 min-w-0">
+                    {g.seats
+                      .filter((s) => s.seat !== g.you)
+                      .map((s) => (
+                        <ColorDot key={s.seat} color={s.color} />
+                      ))}
+                    <span className="truncate">{opponentNames(g) || g.code}</span>
+                  </span>
                   <span className="opacity-70 text-sm">{scoreLine(g)}</span>
                   <span className="opacity-40 text-xs">
                     {new Date(g.finishedAt).toLocaleDateString()}

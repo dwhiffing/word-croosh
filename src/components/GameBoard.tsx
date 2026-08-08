@@ -6,6 +6,8 @@ import {
   BOARD_SIZE,
   FIRST_SQUARE_PILE,
   RACK_PILE,
+  TILE_COLOR_HEX,
+  type TileColorName,
 } from '../utils/constants'
 import { useGameStore, validatePlay } from '../utils/gameStore'
 import { useMultiplayerStore } from '../utils/multiplayerStore'
@@ -33,8 +35,7 @@ function App() {
     lastGame,
     reconnectLastGame,
     myName,
-    hostName,
-    guestName,
+    seats,
   } = useMultiplayerStore()
   const state = useGameStore(
     useShallow((s) => {
@@ -82,8 +83,10 @@ function App() {
   const lastPlay =
     state.lastPlay && `${state.lastPlay.word} (${state.lastPlay.score}) - `
   const myDisplayName = myName ?? 'You'
-  const opponentDisplayName =
-    (lp === 0 ? guestName : hostName) ?? 'Them'
+  const opponentSeats = Array.from(
+    { length: state.scores.length },
+    (_, i) => i,
+  ).filter((i) => i !== lp)
 
   return (
     <div className="bg-surface absolute inset-0">
@@ -96,24 +99,34 @@ function App() {
             <div className="flex flex-col">
               <div className="score-row">
                 <span className={myTurn ? 'active-player' : ''}>
+                  <ColorDot color={seats[lp]?.color} />
                   {myDisplayName}: {state.scores[lp]}
                 </span>
-                <span>/</span>
-                <span className={!myTurn ? 'active-player' : ''}>
-                  {opponentDisplayName}: {state.scores[lp === 0 ? 1 : 0]}
-                </span>
+                {opponentSeats.map((seat) => (
+                  <span key={seat}>
+                    {' / '}
+                    <span
+                      className={
+                        state.currentPlayerIndex === seat
+                          ? 'active-player'
+                          : ''
+                      }>
+                      <ColorDot color={seats[seat]?.color} />
+                      {seats[seat]?.name ?? `Player ${seat + 1}`}:{' '}
+                      {state.scores[seat]}
+                    </span>
+                  </span>
+                ))}
               </div>
               {!state.gameOver && (
                 <div className="turn-row">
                   <>
                     <b>{lastPlay}</b>
-                    {state.givenUpBy === lp
-                      ? `You gave up, ${opponentDisplayName}'s turn!`
-                      : state.givenUpBy != null
-                        ? `${opponentDisplayName} gave up, your turn!`
-                        : myTurn
-                          ? 'Your turn!'
-                          : `${opponentDisplayName}'s turn!`}
+                    {state.givenUpBy.includes(lp) && !myTurn
+                      ? `${seats[state.currentPlayerIndex]?.name ?? `Player ${state.currentPlayerIndex + 1}`}'s turn (you gave up)`
+                      : myTurn
+                        ? 'Your turn!'
+                        : `${seats[state.currentPlayerIndex]?.name ?? `Player ${state.currentPlayerIndex + 1}`}'s turn!`}
                   </>
                 </div>
               )}
@@ -241,6 +254,16 @@ function App() {
       <NameModal />
       <NetworkDebugPanel />
     </div>
+  )
+}
+
+function ColorDot({ color }: { color?: TileColorName | null }) {
+  if (!color) return null
+  return (
+    <span
+      className="inline-block w-2 h-2 rounded-full mr-1"
+      style={{ background: TILE_COLOR_HEX[color] }}
+    />
   )
 }
 

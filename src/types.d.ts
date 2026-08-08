@@ -11,5 +11,5 @@ interface CardType {
   letter: string // 'A'..'Z', or '' for an unassigned blank
   value: number // point value (0 for blanks)
   isBlank: boolean
-  placedBy: 0 | 1 | null // which player committed this tile to the board
+  placedBy: number | null // seat index of the player who committed this tile
 }

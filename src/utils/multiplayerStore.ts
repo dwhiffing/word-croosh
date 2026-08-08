@@ -17,10 +17,12 @@ import {
   apiPutPushSub,
   apiPutState,
   apiSetPlayer,
+  apiStartGame,
   deviceId,
   type GameData,
   type GameResults,
   type SavedGameState,
+  type SeatInfo,
 } from './api'
 import type { TileColorName } from './constants'
 import { pushNetworkDebug } from './networkDebug'
@@ -45,16 +47,16 @@ interface MultiplayerStore {
   myName: string | null
   myColor: TileColorName | null
   showNameModal: boolean // prompted on load until a name is set
-  // The other seat's profile for the current game code, once known.
-  hostName: string | null
-  guestName: string | null
-  hostColor: TileColorName | null
-  guestColor: TileColorName | null
+  // The current game's seats (name + color per joined seat), once known.
+  seats: SeatInfo[]
+  maxPlayers: number
+  started: boolean // the host has closed the lobby and dealt
   openLobby: (phase: Exclude<LobbyPhase, 'connecting'>) => void
   closeLobby: () => void
-  hostGame: (code?: string) => void
+  hostGame: (maxPlayers?: number, existingCode?: string) => void
   joinGame: (code: string) => void
-  startNewGame: () => void
+  startGame: () => void // host-only: close the lobby and deal the first game
+  startNewGame: () => void // host-only: deal a rematch with the same seats
   reconnectLastGame: () => void
   enableNotifications: () => Promise<void>
   disconnect: () => void
@@ -67,10 +69,17 @@ interface MultiplayerStore {
 // react to server-driven events (a deal, a resync, a disconnect, the host's
 // "go ahead and deal" signal) and supply the snapshot this store uploads.
 interface GameHooks {
-  onGameStart: (seed: number, localPlayerIndex: 0 | 1) => void
-  onGameResume: (state: SavedGameState, localPlayerIndex: 0 | 1) => void
+  onGameStart: (
+    seed: number,
+    localPlayerIndex: number,
+    playerCount: number,
+  ) => void
+  onGameResume: (
+    state: SavedGameState,
+    localPlayerIndex: number,
+    playerCount: number,
+  ) => void
   onDisconnect: () => void
-  onHostReadyToStart: () => void
   gameSnapshot: () => SavedGameState | null
 }
 let gameHooks: GameHooks | null = null
@@ -79,7 +88,7 @@ export const setGameHooks = (hooks: GameHooks) => {
 }
 
 // ── Sync engine ─────────────────────────────────────────────────────
-let localPlayerIndex: 0 | 1 = 0
+let localPlayerIndex = 0
 let serverVersion = 0
 let currentSeed: number | null = null // seed of the game we've started locally
 let lastUploadedCount = -1
@@ -87,11 +96,10 @@ let uploading = false
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const POLL_MS = 5000
-// While waiting for the opponent to join or for the host to deal, there's
-// no push notification to wake either side up — polling is the only signal.
-// Poll faster during that short window so "waiting for opponent" doesn't
-// stack two full POLL_MS delays end to end (host notices the join, then the
-// guest notices the deal).
+// While waiting in the lobby (for more players to join, or for the host to
+// deal), there's no push notification to wake anyone up — polling is the
+// only signal. Poll faster during that window so "waiting for players"
+// doesn't stack multiple full POLL_MS delays end to end.
 const LOBBY_POLL_MS = 1500
 let dealPending = false
 
@@ -140,7 +148,7 @@ async function pollTick(force = false) {
 // seen more of the game. `forceAdopt` is set when we already know our
 // local write lost a version race (a CAS conflict) — in that case the
 // server is authoritative even if both sides happen to be at the same
-// moveCount (e.g. both players ended the game independently at once).
+// moveCount (e.g. multiple players ended the game independently at once).
 function reconcile(data: GameData, forceAdopt = false) {
   const store = useMultiplayerStore
   const s = store.getState()
@@ -155,27 +163,26 @@ function reconcile(data: GameData, forceAdopt = false) {
     if (s.gameCode) saveLastGame(s.gameCode, data.you)
   }
 
-  // Host waiting in the lobby: the guest just joined — deal a game.
-  if (
-    localPlayerIndex === 0 &&
-    !data.state &&
-    data.guestJoined &&
-    !s.peerConnected
-  ) {
+  const seats = data.seats ?? s.seats
+  const maxPlayers = data.maxPlayers ?? s.maxPlayers
+  const started = data.started ?? s.started
+
+  // Waiting in the lobby: a player just joined (or left) but the game
+  // hasn't been dealt yet — refresh the seat list and stay in the lobby.
+  // `mode` flips to 'multiplayer' here (not only once state exists) so the
+  // host's very first upload — which is what creates that state — passes
+  // uploadState's mode check.
+  if (!data.state && !started) {
     store.setState({
-      peerConnected: true,
-      reconnecting: false,
       mode: 'multiplayer',
-      showLobbyModal: false,
-      hostName: data.hostName ?? s.hostName,
-      guestName: data.guestName ?? s.guestName,
-      hostColor: data.hostColor ?? s.hostColor,
-      guestColor: data.guestColor ?? s.guestColor,
+      peerConnected: seats.length > 1,
+      reconnecting: false,
+      showLobbyModal: true,
+      seats,
+      maxPlayers,
+      started,
     })
-    pushNetworkDebug('Opponent joined — starting game')
-    dealPending = false
-    restartPollingIfActive()
-    gameHooks?.onHostReadyToStart()
+    pushNetworkDebug('Lobby updated')
     return
   }
   if (!data.state) return
@@ -186,10 +193,9 @@ function reconcile(data: GameData, forceAdopt = false) {
     reconnecting: false,
     mode: 'multiplayer',
     showLobbyModal: false,
-    hostName: data.hostName ?? s.hostName,
-    guestName: data.guestName ?? s.guestName,
-    hostColor: data.hostColor ?? s.hostColor,
-    guestColor: data.guestColor ?? s.guestColor,
+    seats,
+    maxPlayers,
+    started,
   })
   if (state.gameOver && s.gameCode) void fetchResults(s.gameCode)
 
@@ -209,7 +215,7 @@ function reconcile(data: GameData, forceAdopt = false) {
     pushNetworkDebug('New game from server')
     dealPending = false
     restartPollingIfActive()
-    gameHooks?.onGameStart(data.seed, localPlayerIndex)
+    gameHooks?.onGameStart(data.seed, localPlayerIndex, seats.length)
     return
   }
 
@@ -221,7 +227,7 @@ function reconcile(data: GameData, forceAdopt = false) {
     lastUploadedCount = serverCount
     dealPending = false
     restartPollingIfActive()
-    gameHooks?.onGameResume(state, localPlayerIndex)
+    gameHooks?.onGameResume(state, localPlayerIndex, seats.length)
   } else if (localCount > serverCount) {
     void uploadState() // we're ahead — e.g. an earlier upload failed
   }
@@ -323,10 +329,9 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
   myName: null,
   myColor: null,
   showNameModal: false,
-  hostName: null,
-  guestName: null,
-  hostColor: null,
-  guestColor: null,
+  seats: [],
+  maxPlayers: 4,
+  started: false,
 
   openLobby: (phase) =>
     set({ showLobbyModal: true, lobbyPhase: phase, error: null }),
@@ -340,16 +345,15 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
     set({ showLobbyModal: false })
   },
 
-  hostGame: async (existingCode?: string) => {
+  hostGame: async (maxPlayers = 4, existingCode?: string) => {
     localPlayerIndex = 0
     set({
       lobbyPhase: 'hosting',
       error: null,
       results: null,
-      hostName: null,
-      guestName: null,
-      hostColor: null,
-      guestColor: null,
+      seats: [],
+      maxPlayers,
+      started: false,
     })
     try {
       if (existingCode) {
@@ -369,15 +373,20 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
         }
         pushNetworkDebug('Previous game expired — creating a new one')
       }
-      const created = await apiCreateGame()
+      const created = await apiCreateGame(maxPlayers)
       serverVersion = created.version
-      set({ gameCode: created.code })
+      set({
+        gameCode: created.code,
+        seats: created.seats,
+        maxPlayers: created.maxPlayers,
+      })
       setUrlParam('host', created.code)
       saveLastGame(created.code, 0)
       pushNetworkDebug(`Hosting game ${created.code}`)
-      dealPending = true // poll fast until the guest joins and we can deal
+      dealPending = true // poll fast until players join and we start
       startPolling()
       sendPushSubIfAny()
+      void pollTick(true)
     } catch (e) {
       set({ error: 'Could not reach the game server. Try again.' })
       pushNetworkDebug(`Host failed: ${(e as Error).message}`)
@@ -390,10 +399,8 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
       lobbyPhase: 'connecting',
       error: null,
       results: null,
-      hostName: null,
-      guestName: null,
-      hostColor: null,
-      guestColor: null,
+      seats: [],
+      started: false,
     })
     try {
       const data = await apiJoinGame(code)
@@ -406,28 +413,47 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
       if (data.you != null) localPlayerIndex = data.you
       set({
         gameCode: code.toUpperCase(),
-        hostName: data.hostName ?? null,
-        guestName: data.guestName ?? null,
-        hostColor: data.hostColor ?? null,
-        guestColor: data.guestColor ?? null,
+        seats: data.seats ?? [],
+        maxPlayers: data.maxPlayers ?? 4,
+        started: data.started ?? false,
+        showLobbyModal: true,
       })
       setUrlParam('join', code.toUpperCase())
       saveLastGame(code, localPlayerIndex)
       pushNetworkDebug(`Joined game ${code.toUpperCase()}`)
       void fetchResults(code.toUpperCase())
       // If the host has dealt, this starts/restores the game; otherwise
-      // we stay in the connecting lobby, polling fast, until it sees the deal.
+      // we stay in the lobby, polling fast, until it sees the deal.
       dealPending = true
       reconcile(data)
       startPolling()
       sendPushSubIfAny()
     } catch (e) {
       set({
-        error: 'Could not reach the game server. Try again.',
+        error: (e as Error).message || 'Could not reach the game server. Try again.',
         lobbyPhase: 'joining',
       })
       pushNetworkDebug(`Join failed: ${(e as Error).message}`)
     }
+  },
+
+  // Host-only: close the lobby to new joiners and deal the first game.
+  startGame: () => {
+    if (localPlayerIndex !== 0) return
+    void apiStartGame(get().gameCode!)
+    set({ started: true, showLobbyModal: false })
+    get().startNewGame()
+  },
+
+  // Host-only: deal a fresh game (initial deal or rematch) to the same seats.
+  startNewGame: () => {
+    if (localPlayerIndex !== 0) return
+    const seed = Date.now()
+    currentSeed = seed
+    lastUploadedCount = -1
+    const playerCount = get().seats.length
+    gameHooks?.onGameStart(seed, 0, playerCount) // host is always seat 0
+    void uploadState(true)
   },
 
   reconnectLastGame: () => {
@@ -435,19 +461,11 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
     if (!last) return
     if (last.role === 0) {
       get().openLobby('hosting')
-      get().hostGame(last.code)
+      get().hostGame(4, last.code)
     } else {
       get().openLobby('joining')
       get().joinGame(last.code)
     }
-  },
-
-  startNewGame: () => {
-    const seed = Date.now()
-    currentSeed = seed
-    lastUploadedCount = -1
-    gameHooks?.onGameStart(seed, 0) // host is always player 0
-    void uploadState(true)
   },
 
   enableNotifications: async () => {
@@ -475,10 +493,8 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
       gameCode: null,
       lobbyPhase: 'joining' as LobbyPhase,
       results: null,
-      hostName: null,
-      guestName: null,
-      hostColor: null,
-      guestColor: null,
+      seats: [],
+      started: false,
     })
     gameHooks?.onDisconnect()
   },
@@ -524,7 +540,7 @@ export function autoConnect() {
   const joinCode = params.get('join')
   if (hostCode) {
     useMultiplayerStore.getState().openLobby('hosting')
-    useMultiplayerStore.getState().hostGame(hostCode)
+    useMultiplayerStore.getState().hostGame(4, hostCode)
   } else if (joinCode) {
     useMultiplayerStore.getState().openLobby('joining')
     useMultiplayerStore.getState().joinGame(joinCode)
@@ -532,7 +548,7 @@ export function autoConnect() {
 }
 
 const LAST_GAME_KEY = 'word-croosh-last-game'
-type LastGame = { code: string; role: 0 | 1 }
+type LastGame = { code: string; role: number }
 
 function loadLastGame(): LastGame | null {
   try {
@@ -543,7 +559,7 @@ function loadLastGame(): LastGame | null {
   }
 }
 
-function saveLastGame(code: string, role: 0 | 1) {
+function saveLastGame(code: string, role: number) {
   const lastGame: LastGame = { code: code.toUpperCase(), role }
   localStorage.setItem(LAST_GAME_KEY, JSON.stringify(lastGame))
   useMultiplayerStore.setState({ lastGame })

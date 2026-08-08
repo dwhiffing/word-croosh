@@ -24,7 +24,6 @@ export function MenuDropdown({
   const gameActive = useGameStore((s) => s.cards.length > 0)
   const {
     mode,
-    openLobby,
     disconnect,
     notificationsEnabled,
     enableNotifications,
@@ -66,17 +65,6 @@ export function MenuDropdown({
                 {
                   label: 'Change Name',
                   onClick: () => openNameModal(),
-                },
-                {
-                  label: 'Host Game',
-                  onClick: () => {
-                    openLobby('hosting')
-                    useMultiplayerStore.getState().hostGame()
-                  },
-                },
-                {
-                  label: 'Join Game',
-                  onClick: () => openLobby('joining'),
                 },
               ]
             : []),
