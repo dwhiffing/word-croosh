@@ -16,6 +16,7 @@ export interface SavedGameState {
 	lastPlay?: { word: string; score: number; tileIds: number[] } | null;
 	wins?: [number, number];
 	lastWinnerIndex?: 0 | 1 | null;
+	givenUpBy?: 0 | 1 | null;
 }
 
 export interface GameData {

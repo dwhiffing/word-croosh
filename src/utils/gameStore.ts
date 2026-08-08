@@ -51,6 +51,7 @@ export interface GameState {
   passCount: number // consecutive passes; 2 ends the game
   moveCount: number // total turns taken; used to resync after reconnects
   gameOver: boolean
+  givenUpBy: 0 | 1 | null // if set, that player is done — the other plays on solo
   showInstructionsModal: boolean
   showTwoLetterModal: boolean
   showUnseenModal: boolean
@@ -75,6 +76,7 @@ interface GameStore extends GameState {
   startPass: () => void
   confirmSwap: () => void
   cancelSwap: () => void
+  giveUp: () => void
   openInstructions: () => void
   closeInstructions: () => void
   openTwoLetterWords: () => void
@@ -236,6 +238,7 @@ export const useGameStore = create<GameStore>((set, get) => {
         moveCount: saved.moveCount ?? 0,
         gameOver: saved.gameOver,
         lastPlay: saved.lastPlay ?? null,
+        givenUpBy: saved.givenUpBy ?? null,
       })
     },
 
@@ -458,6 +461,37 @@ export const useGameStore = create<GameStore>((set, get) => {
 
     cancelSwap: () => set({ swapMode: false, swapIds: [] }),
 
+    // Bow out. The other player keeps taking turns on their own — no more
+    // passing the turn back to us — until they empty their rack (with an
+    // empty bag), pass, or give up too.
+    giveUp: () => {
+      const state = get()
+      const us = state.localPlayerIndex
+      // once we've already given up, giving up again is a no-op
+      if (state.gameOver || state.givenUpBy === us) return
+      const opponentAlreadyGaveUp = state.givenUpBy === otherPlayer(us)
+      const ourTurn = state.currentPlayerIndex === us
+      let cards = state.cards
+      if (ourTurn) {
+        for (const id of state.pending) cards = returnTileToRack(cards, id, us)
+        cards = reindexRack(cards, us)
+      }
+      set({
+        cards,
+        givenUpBy: us,
+        currentPlayerIndex: otherPlayer(us),
+        gameOver: opponentAlreadyGaveUp,
+        // bump moveCount so this change is recognized as newer and uploaded
+        moveCount: state.moveCount + 1,
+        ...(ourTurn && {
+          pending: [],
+          swapMode: false,
+          swapIds: [],
+        }),
+      })
+      if (opponentAlreadyGaveUp) finalizeScores(get, set)
+    },
+
     openInstructions: () => set({ showInstructionsModal: true }),
     closeInstructions: () => set({ showInstructionsModal: false }),
     openTwoLetterWords: () => set({ showTwoLetterModal: true }),
@@ -498,6 +532,7 @@ function initializeGameState(): Omit<GameState, 'cards'> {
     passCount: 0,
     moveCount: 0,
     gameOver: false,
+    givenUpBy: null,
     showInstructionsModal: false,
     showTwoLetterModal: false,
     showUnseenModal: false,
@@ -868,14 +903,23 @@ function endTurn(
   const passCount = wasPass ? state.passCount + 1 : 0
 
   // Game ends: two consecutive passes, or the mover emptied their rack with
-  // an empty bag.
+  // an empty bag. If the other player has given up, the mover is playing
+  // solo — a single pass (or emptying their rack) is enough to end it.
   const bagEmpty = tilesInPile(BAG_PILE, state.cards).length === 0
   const moverRackEmpty =
     tilesInPile(RACK_PILE[playerIndex], state.cards).length === 0
-  const gameOver = passCount >= 4 || (bagEmpty && moverRackEmpty)
+  const opponentGaveUp = state.givenUpBy === otherPlayer(playerIndex)
+  const gameOver =
+    passCount >= 4 ||
+    (bagEmpty && moverRackEmpty) ||
+    (opponentGaveUp && wasPass)
+
+  // Once someone has given up, the turn never returns to them — the
+  // remaining player just keeps going.
+  const nextPlayer = opponentGaveUp ? playerIndex : otherPlayer(playerIndex)
 
   set({
-    currentPlayerIndex: otherPlayer(playerIndex),
+    currentPlayerIndex: nextPlayer,
     pending: [],
     activeCard: null,
     selectedSquare: null,
@@ -890,7 +934,8 @@ function endTurn(
   const { localPlayerIndex } = get()
   if (
     !gameOver &&
-    otherPlayer(playerIndex) === localPlayerIndex &&
+    nextPlayer === localPlayerIndex &&
+    nextPlayer !== playerIndex &&
     useMultiplayerStore.getState().mode === 'multiplayer'
   ) {
     navigator.vibrate?.(60)
@@ -945,6 +990,7 @@ function snapshotGameState(state: GameState): SavedGameState {
     moveCount: state.moveCount,
     gameOver: state.gameOver,
     lastPlay: state.lastPlay,
+    givenUpBy: state.givenUpBy,
   }
 }
 

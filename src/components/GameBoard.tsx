@@ -58,6 +58,8 @@ function App() {
 				startPass: s.startPass,
 				confirmSwap: s.confirmSwap,
 				cancelSwap: s.cancelSwap,
+				giveUp: s.giveUp,
+				givenUpBy: s.givenUpBy,
 			};
 		}),
 	);
@@ -98,6 +100,14 @@ function App() {
 										) : (
 											"Pass your turn?"
 										)
+									) : state.givenUpBy === lp ? (
+										"You gave up - opponent is finishing the game"
+									) : state.givenUpBy != null ? (
+										<>
+											{state.lastPlay &&
+												`${state.lastPlay.word} (${state.lastPlay.score}) - `}
+											Opponent gave up - you are finishing the game
+										</>
 									) : (
 										<>
 											{state.lastPlay &&
