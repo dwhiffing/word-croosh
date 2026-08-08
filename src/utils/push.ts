@@ -24,6 +24,19 @@ export async function initPush(): Promise<PushSubscriptionJSON | null> {
 	}
 }
 
+// Close any "It's your turn!" notifications still sitting in the tray —
+// once the app is open the user has seen the move, so they're stale.
+export async function clearTurnNotifications(): Promise<void> {
+	if (!("serviceWorker" in navigator)) return;
+	try {
+		const reg = await navigator.serviceWorker.getRegistration();
+		const notes = await reg?.getNotifications({ tag: "word-croosh-turn" });
+		notes?.forEach((n) => n.close());
+	} catch {
+		// best-effort; nothing to do if the SW isn't ready yet
+	}
+}
+
 export type PushEnableResult =
 	| { ok: true; sub: PushSubscriptionJSON }
 	| { ok: false; reason: string };

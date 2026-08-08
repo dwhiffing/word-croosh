@@ -18,7 +18,7 @@ import {
 	type GameData,
 	type SavedGameState,
 } from "./api";
-import { enablePush, initPush } from "./push";
+import { clearTurnNotifications, enablePush, initPush } from "./push";
 
 export type { SavedGameState } from "./api";
 
@@ -538,6 +538,7 @@ export function resyncNow() {
 
 document.addEventListener("visibilitychange", () => {
 	if (document.visibilityState !== "visible") return;
+	void clearTurnNotifications();
 	void pollTick(true);
 });
 
@@ -546,6 +547,10 @@ document.addEventListener("visibilitychange", () => {
 void initPush().then((sub) => {
 	if (sub) registerOwnPushSubscription(sub);
 });
+
+// Opening the app means the user has seen the game — drop any stale
+// "your turn" notification from the tray.
+void clearTurnNotifications();
 
 // Auto-connect from URL params on page load
 export function autoConnect() {
