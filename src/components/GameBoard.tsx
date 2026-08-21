@@ -27,6 +27,9 @@ import { NetworkDebugPanel } from './NetworkDebugPanel'
 import { Rack, Square } from './Pile'
 import Tile from './Tile'
 
+// Matches the server's shared cooldown for POST /games/:code/nudge.
+const NUDGE_COOLDOWN_MS = 60_000
+
 function App() {
   const {
     showLobbyModal,
@@ -40,7 +43,10 @@ function App() {
     mode,
     nudge,
   } = useMultiplayerStore()
-  const [nudgeStatus, setNudgeStatus] = useState<string | null>(null)
+  // Client-side mirror of the server's nudge cooldown (see server/worker.js
+  // POST /games/:code/nudge) — purely cosmetic, the server enforces the
+  // real limit regardless of what this button shows.
+  const [nudgeDisabled, setNudgeDisabled] = useState(false)
   const state = useGameStore(
     useShallow((s) => {
       const play =
@@ -184,22 +190,19 @@ function App() {
                           mode === 'multiplayer' && (
                             <button
                               onClick={() => {
-                                setNudgeStatus('sending')
-                                nudge()
-                                  .then(() => setNudgeStatus('sent'))
-                                  .catch((e: Error) => setNudgeStatus(e.message))
-                                  .finally(() => {
-                                    setTimeout(() => setNudgeStatus(null), 3000)
-                                  })
+                                setNudgeDisabled(true)
+                                setTimeout(
+                                  () => setNudgeDisabled(false),
+                                  NUDGE_COOLDOWN_MS,
+                                )
+                                nudge().catch(() => {
+                                  // rate-limited or no subscription — the
+                                  // button just re-enables after the cooldown
+                                  // either way, no need to surface this
+                                })
                               }}
-                              disabled={nudgeStatus === 'sending'}>
-                              {nudgeStatus === 'sending'
-                                ? 'Nudge'
-                                : nudgeStatus === 'sent'
-                                  ? 'Nudged!'
-                                  : nudgeStatus
-                                    ? nudgeStatus
-                                    : 'Nudge'}
+                              disabled={nudgeDisabled}>
+                              Nudge
                             </button>
                           )
                         )}
