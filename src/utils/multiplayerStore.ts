@@ -21,11 +21,11 @@ import {
   apiSetPlayer,
   apiStartGame,
   deviceId,
-  setDeviceId,
   type GameData,
   type GameResults,
   type SavedGameState,
   type SeatInfo,
+  setDeviceId,
 } from './api'
 import type { TileColorName } from './constants'
 import { pushNetworkDebug } from './networkDebug'
@@ -69,7 +69,11 @@ interface MultiplayerStore {
   disconnect: () => void
   openNameModal: () => void
   closeNameModal: () => void
-  setMyProfile: (name: string, color: TileColorName, pin: string) => Promise<void>
+  setMyProfile: (
+    name: string,
+    color: TileColorName,
+    pin: string,
+  ) => Promise<void>
   // Recover an existing player identity by name + PIN on this device.
   // Throws (with a server error message) if there's no match.
   loginAsExisting: (name: string, pin: string) => Promise<void>
@@ -95,6 +99,28 @@ interface GameHooks {
 let gameHooks: GameHooks | null = null
 export const setGameHooks = (hooks: GameHooks) => {
   gameHooks = hooks
+}
+
+// A cold PWA reload races the service worker / fetch stack starting up —
+// the initial reconnect (autoConnect → hostGame/joinGame) has no built-in
+// retry, unlike the steady-state poll loop which just tries again next
+// cycle. One transient failure here used to be a dead end (error shown,
+// no automatic recovery), even though the game itself was perfectly fine.
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  attempts = 3,
+  delayMs = 400,
+): Promise<T> {
+  let lastErr: unknown
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn()
+    } catch (e) {
+      lastErr = e
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs))
+    }
+  }
+  throw lastErr
 }
 
 // ── Sync engine ─────────────────────────────────────────────────────
@@ -367,8 +393,10 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
     })
     try {
       if (existingCode) {
-        // Resume a game we were hosting (e.g. after a reload).
-        const data = await apiGetGame(existingCode, 0)
+        // Resume a game we were hosting (e.g. after a reload) — retried,
+        // since this fires on every cold page load and a bare network
+        // blip here shouldn't be a dead end.
+        const data = await withRetry(() => apiGetGame(existingCode, 0))
         if (data) {
           serverVersion = data.version
           set({ gameCode: existingCode.toUpperCase() })
@@ -413,9 +441,8 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
       started: false,
     })
     try {
-      const data = await apiJoinGame(code)
+      const data = await withRetry(() => apiJoinGame(code))
       if (!data) {
-        if (get().lastGame?.code === code.toUpperCase()) clearLastGame()
         set({ error: 'Could not find that game', lobbyPhase: 'joining' })
         return
       }
@@ -440,7 +467,8 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
       sendPushSubIfAny()
     } catch (e) {
       set({
-        error: (e as Error).message || 'Could not reach the game server. Try again.',
+        error:
+          (e as Error).message || 'Could not reach the game server. Try again.',
         lobbyPhase: 'joining',
       })
       pushNetworkDebug(`Join failed: ${(e as Error).message}`)
@@ -552,6 +580,8 @@ void initPush().then((sub) => {
 // "your turn" notification from the tray.
 void clearTurnNotifications()
 
+pushNetworkDebug(`Device id: ${deviceId()}`)
+
 // Load our own profile on startup; prompt for a name if one was never set.
 void apiGetPlayer(deviceId()).then(({ name, color }) => {
   useMultiplayerStore.setState({
@@ -569,10 +599,18 @@ export function autoConnect() {
   if (hostCode) {
     useMultiplayerStore.getState().openLobby('hosting')
     useMultiplayerStore.getState().hostGame(4, hostCode)
-  } else if (joinCode) {
+    return
+  }
+  if (joinCode) {
     useMultiplayerStore.getState().openLobby('joining')
     useMultiplayerStore.getState().joinGame(joinCode)
+    return
   }
+  const last = loadLastGame()
+  if (last !== useMultiplayerStore.getState().lastGame) {
+    useMultiplayerStore.setState({ lastGame: last })
+  }
+  if (last) useMultiplayerStore.getState().reconnectLastGame()
 }
 
 const LAST_GAME_KEY = 'word-croosh-last-game'
