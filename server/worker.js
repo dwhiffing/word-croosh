@@ -263,10 +263,10 @@ async function vapidAuthHeader(endpoint, env) {
   return `vapid t=${unsigned}.${b64url(sig)}, k=${env.VAPID_PUBLIC_KEY}`
 }
 
-async function sendPush(sub, env) {
-  if (!sub?.endpoint?.startsWith('https://') || !env.VAPID_PRIVATE_JWK) return
+async function sendPushOne(sub, env) {
+  if (!sub?.endpoint?.startsWith('https://') || !env.VAPID_PRIVATE_JWK) return true
   try {
-    await fetch(sub.endpoint, {
+    const res = await fetch(sub.endpoint, {
       method: 'POST',
       headers: {
         TTL: '86400',
@@ -274,8 +274,43 @@ async function sendPush(sub, env) {
         Authorization: await vapidAuthHeader(sub.endpoint, env),
       },
     })
+    // 404/410 = the push service says this subscription is gone for good
+    // (uninstalled app, revoked permission, etc) — safe to drop it.
+    return res.status !== 404 && res.status !== 410
   } catch {
-    // best effort — a dead subscription must not fail the move
+    // network hiccup — keep the subscription, don't punish it for that
+    return true
+  }
+}
+
+// Sends to every subscription registered for a seat (a seat can have more
+// than one device — e.g. the same login on a phone and a tablet — and all
+// of them should be notified). Returns the surviving subs so the caller can
+// write back a pruned list.
+async function sendPush(subs, env) {
+  const list = Array.isArray(subs) ? subs : subs ? [subs] : []
+  if (!list.length) return list
+  const alive = await Promise.all(
+    list.map(async (sub) => ((await sendPushOne(sub, env)) ? sub : null)),
+  )
+  return alive.filter(Boolean)
+}
+
+// Writes back a seat's subscription list after a send, dropping any that
+// came back dead (404/410) — best effort, never blocks the caller's response.
+async function pruneDeadSubs(sql, code, seat, aliveSubs) {
+  try {
+    const rows = await sql`SELECT push_subs FROM games WHERE code = ${code}`
+    if (!rows.length) return
+    const subs = rows[0].push_subs ?? {}
+    const before = Array.isArray(subs[seat]) ? subs[seat] : []
+    if (aliveSubs.length === before.length) return // nothing died
+    await sql`
+			UPDATE games
+			SET push_subs = ${JSON.stringify({ ...subs, [seat]: aliveSubs })}::jsonb
+			WHERE code = ${code}`
+  } catch {
+    // best effort — a stale dead subscription just gets retried next time
   }
 }
 
@@ -493,17 +528,35 @@ export default {
       // subscription for the CALLER's own seat, derived from their device
       // id server-side — a client-supplied playerIndex would let any seat
       // overwrite any other seat's subscription.
+      //
+      // A seat holds a LIST of subscriptions, not one: the same login can
+      // be open on more than one device (e.g. a phone and a tablet, or two
+      // people sharing an account), and each of those devices subscribes
+      // independently. Keying by seat alone meant the second device's PUT
+      // silently clobbered the first's, so only whichever device registered
+      // most recently ever got notified. Keyed by endpoint here so the same
+      // device re-subscribing (e.g. after clearing permission) replaces its
+      // own entry instead of piling up duplicates.
       if (req.method === 'PUT' && parts[2] === 'push-sub') {
         const { subscription } = await req.json()
         const seats = await seatsFor(sql, code)
         const mySeat = seatOf(seats, dev)
         if (mySeat == null) return json({ error: 'not seated in this game' }, 403)
-        const rows = await sql`
+        const gameRows = await sql`SELECT push_subs FROM games WHERE code = ${code}`
+        if (!gameRows.length) return json({ error: 'no such game' }, 404)
+        const subs = gameRows[0].push_subs ?? {}
+        const existing = Array.isArray(subs[mySeat]) ? subs[mySeat] : []
+        const nextSubs = {
+          ...subs,
+          [mySeat]: [
+            ...existing.filter((s) => s.endpoint !== subscription.endpoint),
+            subscription,
+          ],
+        }
+        await sql`
 					UPDATE games
-					SET push_subs = push_subs || ${JSON.stringify({ [mySeat]: subscription })}::jsonb,
-						updated_at = now()
-					WHERE code = ${code} RETURNING code`
-        if (!rows.length) return json({ error: 'no such game' }, 404)
+					SET push_subs = ${JSON.stringify(nextSubs)}::jsonb, updated_at = now()
+					WHERE code = ${code}`
         return json({ ok: true })
       }
 
@@ -527,10 +580,15 @@ export default {
           return json({ error: "it's your turn — nothing to nudge" }, 400)
         if (g.last_nudge_at && Date.now() - new Date(g.last_nudge_at).getTime() < 60_000)
           return json({ error: 'already nudged recently — try again in a bit' }, 429)
-        const sub = (g.push_subs ?? {})[target]
-        if (!sub) return json({ error: 'that player has no notifications enabled' }, 409)
+        const subs = (g.push_subs ?? {})[target]
+        if (!subs || !(Array.isArray(subs) ? subs.length : true))
+          return json({ error: 'that player has no notifications enabled' }, 409)
         await sql`UPDATE games SET last_nudge_at = now() WHERE code = ${code}`
-        ctx.waitUntil(sendPush(sub, env))
+        ctx.waitUntil(
+          sendPush(subs, env).then((alive) =>
+            pruneDeadSubs(sql, code, target, alive),
+          ),
+        )
         return json({ ok: true })
       }
 
@@ -593,10 +651,14 @@ export default {
           )
         }
         // notify the player whose turn it now is (skip fresh deals)
-        const subs = rows[0].push_subs ?? {}
+        const allSubs = rows[0].push_subs ?? {}
         const next = state.currentPlayerIndex
-        if ((state.moveCount ?? 0) > 0 && !state.gameOver && subs[next]) {
-          ctx.waitUntil(sendPush(subs[next], env))
+        if ((state.moveCount ?? 0) > 0 && !state.gameOver && allSubs[next]) {
+          ctx.waitUntil(
+            sendPush(allSubs[next], env).then((alive) =>
+              pruneDeadSubs(sql, code, next, alive),
+            ),
+          )
         }
         return json({ version: rows[0].version })
       }
