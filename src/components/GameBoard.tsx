@@ -246,7 +246,7 @@ function App() {
 
       {/* Landing screen */}
       {!started && !peerConnected && (
-        <div className="flex flex-col justify-center items-center h-full gap-4 absolute inset-0 text-2xl">
+        <div className="safe-area flex flex-col justify-center items-center h-full gap-4 absolute inset-0 text-2xl">
           <h1 className="text-4xl font-bold mb-4">WordCrꚙsh</h1>
           {lastGame && (
             <button
