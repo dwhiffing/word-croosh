@@ -43,8 +43,17 @@
 
     /* A tile/square is 1/16 of the smaller viewport dimension (15 cols + margin).
        44px cap gives a 660px board on desktop; reduced to 37.33px (~560px) to
-       shrink the max board width by 100px. */
-    --base-size: min(6.2vw, calc((var(--app-height) - 250px) / 15), 37.33px);
+       shrink the max board width by 100px.
+
+       The height term must also account for the rack (rack-wrap is
+       2.2 * base-size tall) on top of the board's 15 * base-size — omitting
+       it (old: `(height - 250px) / 15`) let a square/near-square viewport
+       (width ~= height, so the 6.2vw term never shrinks to compensate) pick
+       a base-size whose rack + board + fixed chrome exceeded the real
+       viewport height and clipped the rack off-screen. 230px is the
+       measured worst-case fixed chrome (header + score/turn rows + status
+       row + padding, excluding the board and rack, across breakpoints). */
+    --base-size: min(6.2vw, calc((var(--app-height) - 230px) / 17.2), 37.33px);
   }
 
   html,
@@ -101,6 +110,13 @@
   /* ── Board grid ─────────────────────────────────────────────── */
   .board {
     display: grid;
+    /* Without an explicit width, a grid container in a centered flex column
+       has no intrinsic size of its own — its 1fr tracks stretch to fill
+       the flex column's full cross-axis width (which can be much wider
+       than 15 * --base-size on a square/wide viewport), inflating every
+       square (and, via aspect-ratio, the board's rendered height) past
+       what --base-size was computed to fit. */
+    width: calc(var(--base-size) * 15);
     gap: 1px;
     padding: 0px;
     background: var(--color-square-border);
