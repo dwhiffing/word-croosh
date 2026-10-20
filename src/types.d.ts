@@ -1,3 +1,5 @@
+/// <reference types="vite-plugin-pwa/client" />
+
 // Build timestamp injected by vite.config.ts `define` ("dev" in dev mode).
 declare const __BUILD_TIME__: string
 

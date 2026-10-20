@@ -1,8 +1,11 @@
+import { registerSW } from 'virtual:pwa-register'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import GameBoard from './components/GameBoard.tsx'
 import './index.css'
 import { autoConnect } from './utils/multiplayerStore.ts'
+
+registerSW({ immediate: true, onNeedRefresh: () => window.location.reload() })
 
 // Viewport units lie on mobile (Android Chrome reports 100dvh as the
 // URL-bar-hidden height even when the bar is showing), so drive the app

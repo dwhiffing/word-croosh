@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
 @custom-variant touch (@media (pointer: coarse));
+@custom-variant squarish (@media (min-aspect-ratio: 3/4));
 
 @theme {
   --color-surface: #2d6a4f;
@@ -53,7 +54,11 @@
        viewport height and clipped the rack off-screen. 230px is the
        measured worst-case fixed chrome (header + score/turn rows + status
        row + padding, excluding the board and rack, across breakpoints). */
-    --base-size: min(6.2vw, calc((var(--app-height) - 230px) / 17.2), 37.33px);
+    --base-size: min(
+      calc((100vw - env(safe-area-inset-left) - env(safe-area-inset-right)) * 0.062),
+      calc((var(--app-height) - 230px) / 17.2),
+      37.33px
+    );
   }
 
   html,

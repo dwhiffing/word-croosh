@@ -17,6 +17,10 @@ const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
+  // Let browsers reuse a preflight instead of re-sending OPTIONS (each one
+  // a billed request) before every PUT/POST. Browsers cap this lower
+  // (Chrome 2h, Safari 10min) and just use their own max.
+  'Access-Control-Max-Age': '86400',
 }
 
 const MAX_PLAYERS = 4

@@ -7,8 +7,6 @@ import {
   BOARD_SIZE,
   FIRST_SQUARE_PILE,
   RACK_PILE,
-  TILE_COLOR_HEX,
-  type TileColorName,
 } from '../utils/constants'
 import { useGameStore, validatePlay } from '../utils/gameStore'
 import { useMultiplayerStore } from '../utils/multiplayerStore'
@@ -25,6 +23,7 @@ import { TwoLetterWordsModal } from './modals/TwoLetterWordsModal'
 import { UnseenTilesModal } from './modals/UnseenTilesModal'
 import { NetworkDebugPanel } from './NetworkDebugPanel'
 import { Rack, Square } from './Pile'
+import { Scores } from './Scores'
 import Tile from './Tile'
 
 // Matches the server's shared cooldown for POST /games/:code/nudge.
@@ -38,8 +37,6 @@ function App() {
     peerConnected,
     lastGame,
     reconnectLastGame,
-    myName,
-    seats,
     mode,
     nudge,
   } = useMultiplayerStore()
@@ -90,13 +87,6 @@ function App() {
   const myTurn = state.currentPlayerIndex === lp && !state.gameOver
   const started = state.cardCount > 0
   const ownRack = RACK_PILE[lp]
-  const lastPlay =
-    state.lastPlay && `${state.lastPlay.word} (${state.lastPlay.score}) - `
-  const myDisplayName = myName ?? 'You'
-  const opponentSeats = Array.from(
-    { length: state.scores.length },
-    (_, i) => i,
-  ).filter((i) => i !== lp)
 
   return (
     <div className="bg-surface absolute inset-0">
@@ -104,42 +94,9 @@ function App() {
         <Header />
 
         {started && (
-          <div className="flex-1 flex flex-col items-center min-h-0 py-2 pb-20 gap-4">
-            {/* Scores */}
-            <div className="flex flex-col">
-              <div className="score-row">
-                <span className={myTurn ? 'active-player' : ''}>
-                  <ColorDot color={seats[lp]?.color} />
-                  {myDisplayName}: {state.scores[lp]}
-                </span>
-                {opponentSeats.map((seat) => (
-                  <span key={seat}>
-                    {' / '}
-                    <span
-                      className={
-                        state.currentPlayerIndex === seat
-                          ? 'active-player'
-                          : ''
-                      }>
-                      <ColorDot color={seats[seat]?.color} />
-                      {seats[seat]?.name ?? `Player ${seat + 1}`}:{' '}
-                      {state.scores[seat]}
-                    </span>
-                  </span>
-                ))}
-              </div>
-              {!state.gameOver && (
-                <div className="turn-row">
-                  <>
-                    <b>{lastPlay}</b>
-                    {state.givenUpBy.includes(lp) && !myTurn
-                      ? `${seats[state.currentPlayerIndex]?.name ?? `Player ${state.currentPlayerIndex + 1}`}'s turn (you gave up)`
-                      : myTurn
-                        ? 'Your turn!'
-                        : `${seats[state.currentPlayerIndex]?.name ?? `Player ${state.currentPlayerIndex + 1}`}'s turn!`}
-                  </>
-                </div>
-              )}
+          <div className="flex-1 flex flex-col items-center min-h-0 py-4 pb-20 gap-4">
+            <div className="squarish:hidden">
+              <Scores />
             </div>
             <div className="flex flex-col gap-4">
               {/* Board */}
@@ -281,16 +238,6 @@ function App() {
       <NameModal />
       <NetworkDebugPanel />
     </div>
-  )
-}
-
-function ColorDot({ color }: { color?: TileColorName | null }) {
-  if (!color) return null
-  return (
-    <span
-      className="inline-block w-2 h-2 rounded-full mr-1"
-      style={{ background: TILE_COLOR_HEX[color] }}
-    />
   )
 }
 

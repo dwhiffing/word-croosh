@@ -90,8 +90,12 @@ async function request(
   data: GameData & { code?: string; error?: string; playerId?: string }
 }> {
   const sep = path.includes('?') ? '&' : '?'
+  // Only label requests that carry a body as JSON. A content-type header
+  // makes a request "non-simple", so the browser sends a CORS preflight
+  // (a second, billed Worker request) before it — bodyless GETs like the
+  // poll skip that entirely without one.
   const res = await fetch(`${API_URL}${path}${sep}d=${deviceId()}`, {
-    headers: { 'content-type': 'application/json' },
+    ...(init?.body ? { headers: { 'content-type': 'application/json' } } : {}),
     ...init,
   })
   const data = await res.json().catch(() => ({}))

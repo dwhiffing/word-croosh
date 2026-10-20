@@ -129,33 +129,72 @@ let serverVersion = 0
 let currentSeed: number | null = null // seed of the game we've started locally
 let lastUploadedCount = -1
 let uploading = false
-let pollTimer: ReturnType<typeof setInterval> | null = null
+let pollTimer: ReturnType<typeof setTimeout> | null = null
+let pollingActive = false
+let scheduledDelay = 0
 
-const POLL_MS = 5000
+// Every poll is a billed Worker request, so the interval adapts to how
+// likely the server row is to have changed:
+const POLL_MS = 5000 // someone else is up and play has been active
+// Someone else is up but nothing has happened for ACTIVE_WINDOW_MS — they've
+// probably wandered off. The "your turn" push (relayed by the service
+// worker, see onTurnPush) still triggers an immediate poll.
+const IDLE_POLL_MS = 30000
+const ACTIVE_WINDOW_MS = 2 * 60 * 1000
+// It's our turn: nobody else can move, so the only things that can change
+// are rare (another seat giving up).
+const MY_TURN_POLL_MS = 60000
 // While waiting in the lobby (for more players to join, or for the host to
 // deal), there's no push notification to wake anyone up — polling is the
 // only signal. Poll faster during that window so "waiting for players"
 // doesn't stack multiple full POLL_MS delays end to end.
 const LOBBY_POLL_MS = 1500
 let dealPending = false
+let lastActivity = Date.now()
 
-function startPolling() {
-  if (pollTimer) clearInterval(pollTimer)
-  pollTimer = setInterval(
-    () => void pollTick(),
-    dealPending ? LOBBY_POLL_MS : POLL_MS,
-  )
+function nextPollDelay(): number {
+  if (dealPending) return LOBBY_POLL_MS
+  const snap = gameHooks?.gameSnapshot()
+  if (snap && !snap.gameOver && snap.currentPlayerIndex === localPlayerIndex)
+    return MY_TURN_POLL_MS
+  return Date.now() - lastActivity < ACTIVE_WINDOW_MS ? POLL_MS : IDLE_POLL_MS
 }
 
-// Call after `dealPending` changes so the running timer picks up the new
-// interval immediately instead of waiting out whatever's left of the old one.
+function scheduleNextPoll() {
+  if (pollTimer) clearTimeout(pollTimer)
+  pollTimer = null
+  if (!pollingActive) return
+  scheduledDelay = nextPollDelay()
+  pollTimer = setTimeout(async () => {
+    pollTimer = null
+    await pollTick()
+    if (!pollTimer) scheduleNextPoll() // unless something already rescheduled
+  }, scheduledDelay)
+}
+
+function startPolling() {
+  pollingActive = true
+  lastActivity = Date.now()
+  scheduleNextPoll()
+}
+
+// Call after anything that changes the right interval (`dealPending`, whose
+// turn it is) so the timer picks it up now instead of waiting out a long one.
 function restartPollingIfActive() {
-  if (pollTimer) startPolling()
+  if (pollingActive) scheduleNextPoll()
 }
 
 function stopPolling() {
-  if (pollTimer) clearInterval(pollTimer)
+  pollingActive = false
+  if (pollTimer) clearTimeout(pollTimer)
   pollTimer = null
+}
+
+// Something happened (a move, a tap, the app coming to the front): poll at
+// the fast rate again, cutting short a slow wait already scheduled.
+function markActive() {
+  lastActivity = Date.now()
+  if (pollingActive && scheduledDelay > nextPollDelay()) scheduleNextPoll()
 }
 
 async function pollTick(force = false) {
@@ -250,8 +289,9 @@ function reconcile(data: GameData, forceAdopt = false) {
     lastUploadedCount = 0
     pushNetworkDebug('New game from server')
     dealPending = false
-    restartPollingIfActive()
+    lastActivity = Date.now()
     gameHooks?.onGameStart(data.seed, localPlayerIndex, seats.length)
+    restartPollingIfActive() // after the deal, so the turn is current
     return
   }
 
@@ -262,8 +302,9 @@ function reconcile(data: GameData, forceAdopt = false) {
     currentSeed = data.seed ?? currentSeed
     lastUploadedCount = serverCount
     dealPending = false
-    restartPollingIfActive()
+    lastActivity = Date.now()
     gameHooks?.onGameResume(state, localPlayerIndex, seats.length)
+    restartPollingIfActive() // after adopting, so the turn is current
   } else if (localCount > serverCount) {
     void uploadState() // we're ahead — e.g. an earlier upload failed
   }
@@ -294,6 +335,8 @@ async function uploadState(force = false) {
     }
     lastUploadedCount = snap.moveCount ?? 0
     useMultiplayerStore.setState({ reconnecting: false })
+    // our move probably handed the turn on — stop waiting out MY_TURN_POLL_MS
+    markActive()
     pushNetworkDebug(`Uploaded move ${lastUploadedCount} (v${serverVersion})`)
     // The server recorded the result the instant it saw gameOver — pull the
     // updated tally now rather than waiting for the next poll.
@@ -567,7 +610,21 @@ export const useMultiplayerStore = create<MultiplayerStore>((set, get) => ({
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return
   void clearTurnNotifications()
-  void pollTick(true)
+  lastActivity = Date.now()
+  void pollTick(true).then(restartPollingIfActive)
+})
+
+// Someone looking at the board wants moves to show up promptly.
+document.addEventListener('pointerdown', markActive, { passive: true })
+
+// The service worker relays the "your turn" push to an open app (see
+// public/push-sw.js) — the server just accepted a move, so fetch it now
+// rather than waiting out a slow poll.
+navigator.serviceWorker?.addEventListener('message', (e) => {
+  if ((e.data as { type?: string } | null)?.type !== 'word-croosh-turn') return
+  pushNetworkDebug('Turn push received — polling now')
+  lastActivity = Date.now()
+  void pollTick(true).then(restartPollingIfActive)
 })
 
 // Reuse an existing push subscription without prompting (the user may have

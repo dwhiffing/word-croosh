@@ -10,6 +10,9 @@ self.addEventListener('push', (event) => {
         type: 'window',
         includeUncontrolled: true,
       })
+      // Tell any open app to fetch the move now — it polls slowly while
+      // things are quiet, and relies on this to pick up moves promptly.
+      for (const w of wins) w.postMessage({ type: 'word-croosh-turn' })
       if (wins.some((w) => w.visibilityState === 'visible')) return
       await self.registration.showNotification('Word Croosh', {
         body: "It's your turn!",

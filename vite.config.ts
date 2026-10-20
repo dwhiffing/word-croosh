@@ -51,6 +51,13 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,ttf,woff,woff2}'],
         importScripts: ['push-sw.js'],
+        // Without these, a new deploy's service worker installs but sits
+        // "waiting" until every open tab/instance of the PWA is fully
+        // closed — an already-running fullscreen PWA (this app's only
+        // real usage mode) can keep serving old cached JS/CSS indefinitely,
+        // since it's never navigated away from to trigger the handoff.
+        skipWaiting: true,
+        clientsClaim: true,
       },
     }),
   ],
